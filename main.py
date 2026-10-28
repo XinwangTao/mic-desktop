@@ -1,27 +1,34 @@
-"""麦克风接收台入口：装配 UDP 接收 → VAD → STT → UI。"""
+"""麦克风接收台入口：装配 UDP 接收 → VAD → STT → 界面 → TTS 下行。"""
 import logging
 import os
 import time
-import tkinter as tk
+
+from PySide6.QtCore import QTimer
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import QApplication
+
+from micapp import config
+from micapp.stt import base as stt_base
+from micapp.stt import xfyun  # noqa: F401 注册引擎
+from micapp.stt import whisper_http  # noqa: F401 注册引擎
+from micapp.ui import QSS, MainWindow
+from micapp.udp_receiver import UdpReceiver
+from micapp.vad import VADSlicer
 
 
-def main():
-    from micapp import config
+def main() -> int:
     cfg = config.load()
     log_path = os.path.join(os.path.dirname(config.config_path()), "log.txt")
     logging.basicConfig(filename=log_path, level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.info("app start; engine=%s udp_port=%s", cfg["stt_engine"], cfg["udp_port"])
 
-    from micapp.udp_receiver import UdpReceiver
-    from micapp.vad import VADSlicer
-    from micapp.stt import base as stt_base
-    from micapp.stt import xfyun  # noqa: F401 注册引擎
-    from micapp.ui import MainWindow
+    app = QApplication.instance() or QApplication([])
+    app.setStyleSheet(QSS)
+    app.setFont(QFont("Microsoft YaHei UI", 9))
 
-    root = tk.Tk()
     engine = stt_base.create(cfg["stt_engine"], cfg, on_result=None)
-    window = MainWindow(root, cfg, receiver=None, engine=engine)
+    window = MainWindow(cfg, receiver=None, engine=engine)
 
     def on_result(text, idx):
         window.ui("text", text, idx)
@@ -45,21 +52,21 @@ def main():
         on_level=lambda rms: window.ui("level", rms),
     )
 
-    def on_audio(pcm):
-        slicer.feed(pcm)
-
-    receiver = UdpReceiver(cfg["udp_port"], on_audio)
-
-    def poll_stats():
-        window.ui("stats", receiver.stats())
-        root.after(500, poll_stats)
-
+    receiver = UdpReceiver(cfg["udp_port"], slicer.feed)
     window.receiver = receiver
+
+    timer = QTimer()
+    timer.timeout.connect(lambda: window.ui("stats", receiver.stats()))
+    timer.start(500)
+
     receiver.start()
-    poll_stats()
-    root.mainloop()
-    engine.stop()
+    window.show()
+    try:
+        return app.exec()
+    finally:
+        receiver.stop()
+        engine.stop()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

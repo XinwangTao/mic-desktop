@@ -5,11 +5,14 @@ import sys
 
 DEFAULTS = {
     "udp_port": 5000,
+    "speaker_port": 5001,
+    "board_ip": "",
     "stt_engine": "xfyun",
     "language": "zh_cn",
     "xfyun": {"app_id": "", "api_key": "", "api_secret": ""},
     "whisper_http": {"url": "http://127.0.0.1:8390/stt"},
     "vad": {"rms_threshold": 350, "start_ms": 200, "hangover_ms": 800},
+    "tts_voice": "Microsoft Huihui Desktop",
 }
 
 ENGINE_LABELS = {"xfyun": "讯飞云端", "whisper_http": "Whisper 本地"}
