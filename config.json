@@ -1,0 +1,16 @@
+{
+  "_comment": "mic-desktop 配置；udp_port 与固件 AUDIO_UDP_TARGET 端口一致；xfyun 填讯飞凭据",
+  "udp_port": 5000,
+  "stt_engine": "xfyun",
+  "language": "zh_cn",
+  "xfyun": {
+    "app_id": "",
+    "api_key": "",
+    "api_secret": ""
+  },
+  "vad": {
+    "rms_threshold": 170,
+    "start_ms": 120,
+    "hangover_ms": 1000
+  }
+}
