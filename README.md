@@ -28,7 +28,17 @@ UdpReceiver(AUD0解包) → VADSlicer(能量VAD切段) → STTEngine(可插拔) 
 ```
 
 - `micapp/stt/base.py`：引擎注册表。新引擎 = 继承 `STTEngine` + `@register`，config 里换 `stt_engine` 名字即生效。
-- 已实现：`xfyun`（讯飞流式听写，每段语音一个 IAT 会话）。规划：`whisper_http`（本地 Docker whisper HTTP）。
+- **已实现引擎**：
+  - `xfyun`（默认，云端）：讯飞流式听写，每段语音一个 IAT 会话，实时性好。
+  - `whisper_http`（本地）：POST WAV 到本机 Docker 转写服务。启动服务：
+    ```bash
+    docker run -d --name whisper-local --restart unless-stopped \
+      -v F:/cache/models/faster-whisper-small:/models:ro \
+      -v F:/cache/docker-stt/stt_server.py:/w/stt_server.py:ro \
+      -p 8390:8390 whisper-stt python /w/stt_server.py
+    ```
+    切换：config 里 `"stt_engine": "whisper_http"`。
+- 转写历史自动写入 `logs/transcript_YYYYMMDD.txt`；引擎错误写入 `log.txt`。
 - 线程模型：收包/VAD/STT 各自线程，UI 通过队列 + `root.after` 轮询，跨线程零共享。
 
 ## 测试

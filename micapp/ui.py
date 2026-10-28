@@ -21,13 +21,12 @@ class MainWindow:
     def _build(self):
         from micapp.config import ENGINE_LABELS
         engine_label = ENGINE_LABELS.get(self.cfg["stt_engine"], self.cfg["stt_engine"])
-        self.lbl_engine.config(text=f"引擎: {engine_label}")
         top = ttk.Frame(self.root, padding=6)
         top.pack(fill=tk.X)
         self.lbl_dev = ttk.Label(top, text="设备: 等待中", width=28)
         self.lbl_rate = ttk.Label(top, text="0.0 pkt/s", width=14)
         self.lbl_lost = ttk.Label(top, text="丢包 0", width=12)
-        self.lbl_engine = ttk.Label(top, text="引擎: 加载中", width=20)
+        self.lbl_engine = ttk.Label(top, text=f"引擎: {engine_label}", width=20)
         self.lbl_dev.pack(side=tk.LEFT, padx=4)
         self.lbl_rate.pack(side=tk.LEFT, padx=4)
         self.lbl_lost.pack(side=tk.LEFT, padx=4)
