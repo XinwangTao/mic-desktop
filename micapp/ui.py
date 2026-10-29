@@ -57,6 +57,9 @@ QPushButton#ghost:hover {{ border-color: {MUTED}; color: {INK}; }}
 QPushButton#ghostWarn {{ background: rgba(255,176,32,0.12); border: 1px solid rgba(255,176,32,0.45);
                          border-radius: 10px; padding: 6px 14px; color: {WARN}; }}
 QPushButton#ghostWarn:hover {{ border-color: {WARN}; }}
+QPushButton#ghostOn {{ background: rgba(76,141,255,0.14); border: 1px solid rgba(76,141,255,0.50);
+                       border-radius: 10px; padding: 6px 14px; color: {ACCENT}; font-weight: 600; }}
+QPushButton#ghostOn:hover {{ border-color: {ACCENT}; }}
 QToolButton {{ background: transparent; border: none; border-radius: 6px;
                color: {MUTED}; font-size: 15px; padding: 2px 9px; }}
 QToolButton:hover {{ background: {SURFACE_HI}; color: {INK}; }}
@@ -141,12 +144,15 @@ class MainWindow(QWidget):
     sig_status = Signal(str)
     sig_mode = Signal(str, str)
     sig_ns = Signal(bool)                     # 板子自报的降噪状态
+    sig_voice = Signal(bool, bool)            # 语音输入：开启?, 已暂停?
+    sig_hotkey = Signal()                     # 全局热键（在热键线程触发，转给 GUI 线程）
 
     def __init__(self, cfg: dict, receiver=None, engine=None):
         super().__init__()
         self.cfg = cfg
         self.receiver = receiver
         self.engine = engine
+        self.voice = None           # 由 main.py 注入的 VoiceInput
         self._drag_from = None
         self._bubbles = 0
         self._ns_on = True          # 设备端降噪当前状态（A/B 开关）
@@ -170,6 +176,11 @@ class MainWindow(QWidget):
         self.sig_status.connect(self._on_status)
         self.sig_mode.connect(self._on_mode)
         self.sig_ns.connect(self._on_ns_state)
+        self.sig_voice.connect(self._on_voice_state)
+        self.sig_hotkey.connect(self._on_hotkey_voice)
+        # 句柄在 GUI 线程先取好：语音输入在转写线程里判「前台是不是自己」，
+        # winId() 不是线程安全的，那边只读这个缓存值。
+        self._hwnd = int(self.winId())
 
     # ---------- 构建 ----------
     def _build(self):
@@ -312,6 +323,13 @@ class MainWindow(QWidget):
         self.lbl_status.setObjectName("hint")
         lay.addWidget(self.lbl_status)
         lay.addStretch(1)
+        self.btn_vi = QPushButton("语音输入 关", wrap)
+        self.btn_vi.setObjectName("ghost")
+        self.btn_vi.setCursor(Qt.PointingHandCursor)
+        self.btn_vi.setToolTip("开启后，说的话会像打字一样进到当前前台窗口；F9 暂停/恢复。"
+                               "开启期间自动回读会被关掉，避免板子念的话又被输入一遍")
+        self.btn_vi.clicked.connect(self._toggle_voice_input)
+        lay.addWidget(self.btn_vi)
         self.btn_ns = QPushButton("降噪 开", wrap)
         self.btn_ns.setObjectName("ghost")
         self.btn_ns.setCursor(Qt.PointingHandCursor)
@@ -341,6 +359,10 @@ class MainWindow(QWidget):
             self.sig_status.emit(str(args[0]))
         elif kind == "mode":
             self.sig_mode.emit(str(args[0]), str(args[1]) if len(args) > 1 else "")
+        elif kind == "voice_state":
+            self.sig_voice.emit(bool(args[0]), bool(args[1]) if len(args) > 1 else False)
+        elif kind == "hotkey_voice":
+            self.sig_hotkey.emit()
 
     # ---------- 槽 ----------
     def _on_text(self, text, _idx):
@@ -467,6 +489,38 @@ class MainWindow(QWidget):
     def _on_ns_state(self, on):
         self._ns_on = bool(on)
         self._refresh_ns_button()
+
+    # ---------- 语音输入 ----------
+    def _toggle_voice_input(self):
+        if self.voice is None:
+            self.lbl_status.setText("语音输入未初始化")
+            return
+        self.voice.toggle()
+
+    def _on_hotkey_voice(self):
+        # F9：暂停/恢复（没开启时按一下直接开启，省得再点界面）
+        if self.voice is not None:
+            self.voice.toggle_pause()
+
+    def _on_voice_state(self, on, paused):
+        if on and paused:
+            text, obj = "语音输入 暂停", "ghostWarn"
+        elif on:
+            text, obj = "语音输入 开", "ghostOn"
+        else:
+            text, obj = "语音输入 关", "ghost"
+        self.btn_vi.setText(text)
+        self.btn_vi.setObjectName(obj)
+        self.btn_vi.style().unpolish(self.btn_vi)
+        self.btn_vi.style().polish(self.btn_vi)
+
+    def is_self_foreground(self) -> bool:
+        """语音输入往「前台窗口」打字；前台就是自己时不能打，否则打进自己的输入框。"""
+        try:
+            from micapp.typer import foreground_handle
+            return foreground_handle() == self._hwnd
+        except Exception:
+            return False
 
     def _refresh_ns_button(self):
         self.btn_ns.setText("降噪 开" if self._ns_on else "降噪 关")

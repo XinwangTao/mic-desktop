@@ -1,0 +1,132 @@
+"""语音输入：把转写结果当作键盘输入，打进当前前台窗口。
+
+常开模式下没有「每次确认」的机会，风险靠三道闸兜：
+  1. 话太短（默认 0.6 秒）—— 咳嗽、敲键盘、椅子响
+  2. 有效字太少（默认 2 个）—— 噪声幻觉多是一两个字
+  3. 连续触发刹车（默认 2 秒内 3 次）—— 误触发或自激，暂停等人工恢复
+回读互斥由调用方处理（main.py 在开启时关掉自动回读）。
+"""
+import json
+import logging
+import os
+import time
+from collections import deque
+
+from micapp import typer
+
+
+def normalize(text: str) -> str:
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+class VoiceInput:
+    def __init__(self, on_status, on_state, is_self_foreground, is_playing, state_path,
+                 min_seconds: float = 0.6, min_chars: int = 2, brake_count: int = 3,
+                 brake_window_s: float = 2.0, dedupe_window: int = 3, clock=time.monotonic):
+        self.on_status = on_status or (lambda _s: None)
+        self.on_state = on_state or (lambda _on, _paused: None)
+        self.is_self_foreground = is_self_foreground or (lambda: False)
+        self.is_playing = is_playing or (lambda: False)
+        self.state_path = state_path
+        self.min_seconds = min_seconds
+        self.min_chars = min_chars
+        self.brake_count = brake_count
+        self.brake_window_s = brake_window_s
+        self.clock = clock
+        self._recent = deque(maxlen=max(1, dedupe_window))
+        self._accepted_at = deque(maxlen=max(2, brake_count))
+        self.enabled = False
+        self.paused = False
+        self.typed = 0
+        self.skipped = 0
+        self._load()
+
+    # ---------- 状态 ----------
+    def _load(self):
+        try:
+            with open(self.state_path, encoding="utf-8") as f:
+                self.enabled = bool(json.load(f).get("voice_input", False))
+        except (OSError, ValueError):
+            self.enabled = False
+
+    def _save(self):
+        try:
+            tmp = self.state_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"voice_input": self.enabled}, f)
+            os.replace(tmp, self.state_path)
+        except OSError:
+            logging.exception("保存语音输入状态失败")
+
+    def set_enabled(self, on: bool):
+        self.enabled = bool(on)
+        self.paused = False
+        self._accepted_at.clear()
+        self._save()
+        self.on_state(self.enabled, self.paused)
+        if self.enabled:
+            self.on_status("语音输入已开启：说的话会打进当前前台窗口（F9 暂停）")
+        else:
+            self.on_status("语音输入已关闭")
+
+    def toggle(self):
+        self.set_enabled(not self.enabled)
+
+    def toggle_pause(self):
+        if not self.enabled:
+            self.set_enabled(True)
+            return
+        self.paused = not self.paused
+        self._accepted_at.clear()
+        self.on_state(self.enabled, self.paused)
+        self.on_status("语音输入已暂停，按 F9 恢复" if self.paused else "语音输入已恢复")
+
+    # ---------- 主入口 ----------
+    def offer(self, text: str, duration_s: float) -> str:
+        """一句话转写完成时调用；返回这次的动作，便于日志与测试。"""
+        if not self.enabled:
+            return "off"
+        if self.paused:
+            return "paused"
+        if duration_s < self.min_seconds:
+            self.skipped += 1
+            return "too_short"
+        norm = normalize(text)
+        if len(norm) < self.min_chars:
+            self.skipped += 1
+            return "too_few"
+        if norm in self._recent:
+            self.skipped += 1
+            return "dup"
+        if self.is_playing():
+            # 板子正在念回读：这时候上屏等于把播报打进别人的输入框
+            self.skipped += 1
+            return "playing"
+
+        now = self.clock()
+        self._accepted_at.append(now)
+        if (len(self._accepted_at) == self.brake_count
+                and now - self._accepted_at[0] < self.brake_window_s):
+            self.paused = True
+            self.on_state(self.enabled, self.paused)
+            self.on_status("语音输入已暂停：%.0f 秒内连续 %d 次触发，疑似误触发（按 F9 恢复）"
+                           % (self.brake_window_s, self.brake_count))
+            return "brake"
+
+        if self.is_self_foreground():
+            self._recent.append(norm)
+            self.skipped += 1
+            self.on_status("焦点在本应用，这句只显示在聊天区")
+            return "own_window"
+
+        ok, reason = typer.type_text(text)
+        self._recent.append(norm)
+        if not ok:
+            if typer.copy_to_clipboard(text):
+                self.on_status("%s，文字已复制到剪贴板，手动 Ctrl+V" % reason)
+                return "fallback"
+            self.on_status("输入失败：%s" % reason)
+            return "failed"
+        self.typed += 1
+        self.on_status("已输入：%s" % text[:24])
+        return "typed"

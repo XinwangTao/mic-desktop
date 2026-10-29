@@ -6,3 +6,4 @@ dist/*.exe
 dist/config.json
 log.txt
 dist/logs/
+dist/state.json

@@ -1,4 +1,5 @@
-"""麦克风接收台入口：装配 UDP 接收 → VAD → STT → 界面 → TTS 下行。"""
+"""麦克风接收台入口：装配 UDP 接收 → VAD → STT → 界面 → TTS 下行 / 语音输入。"""
+import collections
 import logging
 import os
 import sys
@@ -15,10 +16,12 @@ from micapp.stt import base as stt_base
 from micapp.stt import xfyun  # noqa: F401 注册引擎
 from micapp.stt import whisper_http  # noqa: F401 注册引擎
 from micapp.gate import build_gate
+from micapp.hotkey import VK_F9, GlobalHotkey
 from micapp.readback import Readback
 from micapp.ui import QSS, MainWindow
 from micapp.udp_receiver import UdpReceiver
 from micapp.vad import VADSlicer, _rms
+from micapp.voice_input import VoiceInput
 
 
 def main() -> int:
@@ -54,7 +57,27 @@ def main() -> int:
     # 别让用户只看到一句抛异常的英文。
     engine.status_cb = lambda s: window.ui("status", s)
 
-    # 自动回读：说完一句就自动念出来。默认关，config.json 里 auto_speak=true 才生效。
+    # 语音输入：把转写结果当键盘输入打进前台窗口。常开，风险靠三道闸兜。
+    # 状态存 state.json（不碰放着凭据的 config.json）。
+    readback_on = bool(cfg.get("auto_speak", False))
+
+    def on_voice_state(on, paused):
+        window.ui("voice_state", on, paused)
+        # 输入模式下必须关掉回读：板子念的话会被自己的麦收回去再上屏一遍
+        readback.enabled = readback_on and not on
+        window.ui("status", "语音输入" + ("开启，回读已暂停" if on else "关闭"))
+
+    voice = VoiceInput(
+        on_status=lambda s: window.ui("status", s),
+        on_state=on_voice_state,
+        is_self_foreground=window.is_self_foreground,
+        is_playing=lambda: window.speaker.busy,
+        state_path=os.path.join(os.path.dirname(config.config_path()), "state.json"),
+        min_seconds=float(cfg.get("voice_input_min_seconds", 0.6)),
+        min_chars=int(cfg.get("voice_input_min_chars", 2)),
+    )
+    window.voice = voice
+    durations = collections.deque()      # 与引擎的串行顺序对应，给输入闸门判「话太短」
     # 去重 / 刹车 / 排队都在 Readback 里，任何一道拦下都只跳过这一句。
     readback = Readback(
         window.speaker,
@@ -63,6 +86,9 @@ def main() -> int:
         min_chars=int(cfg.get("auto_speak_min_chars", 2)),
         on_status=lambda s: window.ui("status", s),
     )
+    # 上次退出时是开着的，重启要接着开着：按钮外观和回读互斥都得立刻对上
+    if voice.enabled:
+        on_voice_state(True, voice.paused)
 
     def on_result(text, idx):
         window.ui("text", text, idx)
@@ -74,7 +100,12 @@ def main() -> int:
                 f.write(time.strftime("[%H:%M:%S] ") + text + "\n")
         except OSError:
             logging.exception("transcript save failed")
-        action = readback.offer(text)
+        # 语音输入：把这句话打进前台窗口；太长/太短/重复/回读期间的判断都在 VoiceInput 里
+        dur = durations.popleft() if durations else 99.0
+        vi_action = voice.offer(text, dur)
+        if vi_action not in ("typed", "off", "own_window"):
+            logging.info("voice input skip (%s): %s", vi_action, text)
+        action = "off" if voice.enabled else readback.offer(text)
         if action not in ("spoken", "queued", "off"):
             logging.info("readback skip (%s): %s", action, text)
 
@@ -83,7 +114,12 @@ def main() -> int:
 
     def on_utterance(pcm):
         # 每句话的真实电平：阈值定得对不对，看这一行就知道（rms 应当明显高于 thr）
-        logging.info("utterance %.2f s rms=%.0f thr=%.0f", len(pcm) / 2 / 16000, _rms(pcm), slicer.threshold)
+        secs = len(pcm) / 2 / 16000
+        logging.info("utterance %.2f s rms=%.0f thr=%.0f", secs, _rms(pcm), slicer.threshold)
+        # 引擎是串行处理的，FIFO 就能把时长对回对应的那句；积压时丢最老的防止无限涨
+        durations.append(secs)
+        while len(durations) > 32:
+            durations.popleft()
         engine.feed_utterance(pcm)
 
     vad_cfg = cfg["vad"]
@@ -161,9 +197,15 @@ def main() -> int:
 
     receiver.start()
     window.show()
+
+    # 全局热键 F9：暂停/恢复语音输入。注册失败（被别的程序占了）只警告，不影响主流程。
+    hotkey = GlobalHotkey(VK_F9, lambda: window.ui("hotkey_voice"))
+    hotkey.start()
+
     try:
         return app.exec()
     finally:
+        hotkey.stop()
         receiver.stop()
         engine.stop()
 
