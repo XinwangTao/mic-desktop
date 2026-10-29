@@ -127,6 +127,8 @@ class Speaker:
         self.voice = voice
         self._stop = threading.Event()
         self._thread = None
+        # BLE 模式下行：设成一个带 send_pcm 的 BleReceiver，就不再走 UDP
+        self.ble = None
 
     def control(self, ip: str, text: str) -> bool:
         """下行控制帧：不走播报线程，免得和正在播放的音频抢时序。"""
@@ -139,7 +141,8 @@ class Speaker:
     def speak(self, text: str, ip: str, on_status=None, on_done=None) -> bool:
         if self.busy:
             return False
-        if not ip:
+        use_ble = self.ble is not None and getattr(self.ble, "connected", False)
+        if not use_ble and not ip:
             if on_status:
                 on_status("还未收到板子的上行包，无法确定 IP")
             if on_done:
@@ -159,7 +162,14 @@ class Speaker:
                 dur = len(pcm) / 2 / RATE
                 if on_status:
                     on_status("正在播放 %.1f 秒…" % dur)
-                took = send_pcm(ip, self.port, pcm, self._stop)
+                if use_ble:
+                    took = self.ble.send_pcm(pcm, self._stop)
+                else:
+                    took = send_pcm(ip, self.port, pcm, self._stop)
+                if took <= 0:
+                    if on_status:
+                        on_status("下发失败：链路已断开")
+                    return
                 if on_status:
                     on_status("已播放 %.1f 秒（发送耗时 %.1f 秒）" % (dur, took))
                 ok = True

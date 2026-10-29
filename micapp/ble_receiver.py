@@ -41,6 +41,9 @@ class BleReceiver(threading.Thread):
         self._win_samples = 0
         self.connected = False
         self.status = "未连接"
+        self.last_stat = ""
+        self._pong = {}          # token -> (发出时刻, threading.Event)
+        self._pong_lock = threading.Lock()
 
     # ---------- 对外 ----------
     def run(self):
@@ -113,7 +116,22 @@ class BleReceiver(threading.Thread):
         return None
 
     def _on_notify(self, _sender, data: bytearray):
-        decoded = adpcm.decode(bytes(data))
+        raw = bytes(data)
+        # 166 字节是音频包；其它长度是控制回包（STAT / PONG），别当音频解码
+        if len(raw) != adpcm.HEADER + 160:
+            text = raw.decode("utf-8", "replace").strip()
+            if text.startswith("PONG"):
+                parts = text.split()
+                if len(parts) >= 2:
+                    with self._pong_lock:
+                        entry = self._pong.pop(parts[1], None)
+                    if entry is not None:
+                        entry[1].set()
+            elif text.startswith("STAT"):
+                self.last_stat = text
+            return
+
+        decoded = adpcm.decode(raw)
         if decoded is None:
             with self._lock:
                 self._stats["bad"] += 1
@@ -133,6 +151,64 @@ class BleReceiver(threading.Thread):
         self._expect_seq = (seq + 1) & 0xFFFF
         self.on_audio(pcm, flags)
         self._update_rate()
+
+    # ---------- 下行 ----------
+    def send_pcm(self, pcm: bytes, stop_event=None) -> float:
+        """把 16k mono PCM 按 20 ms 一帧编成 ADPCM 写进 RX 特征，实时节流。
+
+        返回实际耗时；未连接或写失败提前返回。response=False（写无响应），
+        否则每个包都要等一个 ATT 确认，吞吐撑不住。
+        """
+        client, loop = self._client, self._loop
+        if client is None or loop is None or not self.connected:
+            return 0.0
+        total = len(pcm) // (adpcm.SAMPLES * 2)
+        if total <= 0:
+            return 0.0
+        t0 = time.perf_counter()
+        for i in range(total):
+            if stop_event is not None and stop_event.is_set():
+                break
+            chunk = pcm[i * 640:(i + 1) * 640]
+            packet = adpcm.encode(chunk, seq=i & 0xFFFF, flags=0)
+            fut = asyncio.run_coroutine_threadsafe(
+                client.write_gatt_char(RX_UUID, packet, response=False), loop)
+            try:
+                fut.result(timeout=1.0)
+            except Exception:
+                break
+            delay = t0 + (i + 1) * 0.02 - time.perf_counter()
+            if delay > 0:
+                time.sleep(delay)
+        return time.perf_counter() - t0
+
+    def ping(self, timeout: float = 2.0):
+        """发 PING 等 PONG，返回往返秒数；失败返回 None。
+
+        板子只回显 token，往返时间用本机时钟算，不需要两边时钟同步。
+        计时用 perf_counter：Windows 上 time.monotonic() 只有 ~15.6 ms 精度，
+        量 BLE 往返会被量化成 0/16/31/47…，看不出真实分布。
+        """
+        client, loop = self._client, self._loop
+        if client is None or loop is None or not self.connected:
+            return None
+        token = str(int(time.perf_counter() * 1000) & 0xFFFFFF)
+        event = threading.Event()
+        with self._pong_lock:
+            self._pong[token] = (time.perf_counter(), event)
+        t0 = time.perf_counter()
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                client.write_gatt_char(RX_UUID, ("PING " + token).encode(), response=False), loop)
+            fut.result(timeout=1.0)
+        except Exception:
+            with self._pong_lock:
+                self._pong.pop(token, None)
+            return None
+        ok = event.wait(timeout)
+        with self._pong_lock:
+            self._pong.pop(token, None)
+        return (time.perf_counter() - t0) if ok else None
 
     def _update_rate(self):
         now = time.monotonic()

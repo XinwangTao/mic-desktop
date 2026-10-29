@@ -129,6 +129,7 @@ def main() -> int:
     if str(cfg.get("input_mode", "udp")).lower() == "ble":
         from micapp.ble_receiver import BleReceiver
         receiver = BleReceiver(on_audio, name_prefix=cfg.get("ble_name_prefix", "MicDesktop-"))
+        window.speaker.ble = receiver   # 下行 TTS 改走 BLE 的 RX 特征
         logging.info("input mode: ble (prefix=%s)", cfg.get("ble_name_prefix", "MicDesktop-"))
     else:
         receiver = UdpReceiver(cfg["udp_port"], on_audio)

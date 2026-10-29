@@ -58,3 +58,54 @@ def decode(packet: bytes):
         out[n + 1] = pred
 
     return seq, flags, struct.pack("<%dh" % SAMPLES, *out)
+
+
+def encode(pcm: bytes, seq: int = 0, flags: int = 0) -> bytes:
+    """把 320 采样（640 字节 s16LE）编成 166 字节包，与固件 encode_frame 逐位对应。
+
+    每帧独立：预测器取本帧第一个采样，步长索引按首帧斜率估。
+    从索引 0 起步的话，有幅度的信号第一拍就会把索引推到 88（最粗档），
+    之后整帧都在粗量化里出不来。
+    """
+    vals = struct.unpack("<%dh" % SAMPLES, pcm)
+    pred = vals[0]
+    slope = abs(vals[1] - vals[0])
+    index = 0
+    while index < 88 and STEP_TABLE[index] < slope:
+        index += 1
+
+    head = bytearray([seq & 0xFF, seq >> 8, flags,
+                      pred & 0xFF, (pred >> 8) & 0xFF, index])
+    data = bytearray(160)
+    for i in range(1, SAMPLES):
+        step = STEP_TABLE[index]
+        diff = vals[i] - pred
+        sign = 8 if diff < 0 else 0
+        if sign:
+            diff = -diff
+        delta = 0
+        vpdiff = step >> 3
+        if diff >= step:
+            delta |= 4
+            diff -= step
+            vpdiff += step
+        step2 = step >> 1
+        if diff >= step2:
+            delta |= 2
+            diff -= step2
+            vpdiff += step2
+        step3 = step2 >> 1
+        if diff >= step3:
+            delta |= 1
+            vpdiff += step3
+        pred += -vpdiff if sign else vpdiff
+        pred = max(-32768, min(32767, pred))
+        index += INDEX_TABLE[delta & 0x0F]
+        index = max(0, min(88, index))
+        n = i - 1
+        nib = (delta | sign) & 0x0F
+        if (n & 1) == 0:
+            data[n >> 1] = nib << 4
+        else:
+            data[n >> 1] |= nib
+    return bytes(head) + bytes(data)
