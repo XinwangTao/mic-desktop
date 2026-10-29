@@ -11,6 +11,7 @@ from micapp import config
 from micapp.stt import base as stt_base
 from micapp.stt import xfyun  # noqa: F401 注册引擎
 from micapp.stt import whisper_http  # noqa: F401 注册引擎
+from micapp.gate import MicGate
 from micapp.ui import QSS, MainWindow
 from micapp.udp_receiver import UdpReceiver
 from micapp.vad import VADSlicer
@@ -52,8 +53,13 @@ def main() -> int:
         on_level=lambda rms: window.ui("level", rms),
     )
 
-    receiver = UdpReceiver(cfg["udp_port"], slicer.feed)
+    # 朗读期间静音麦克风，避免板子自己的声音被采回来重复转写
+    gate = MicGate(slicer.feed, window.speaker,
+                   tail_s=cfg.get("mic_mute_tail_s", 0.35), slicer=slicer)
+
+    receiver = UdpReceiver(cfg["udp_port"], gate)
     window.receiver = receiver
+    window.gate = gate
 
     timer = QTimer()
     timer.timeout.connect(lambda: window.ui("stats", receiver.stats()))

@@ -35,7 +35,16 @@ class VADSlicer:
         self._above = 0
         self._quiet = 0
         self._active = False
+        self._pre = collections.deque(maxlen=self.start_frames)  # 起始判定期间的前置帧
         self._hist = collections.deque(maxlen=50)    # 电平条用最近电平
+
+    def reset(self):
+        """丢掉当前未完成的语音段（例如朗读期间被门控时）。"""
+        self._buf = bytearray()
+        self._above = 0
+        self._quiet = 0
+        self._active = False
+        self._pre.clear()
 
     def feed(self, pcm: bytes):
         rms = _rms(pcm)
@@ -47,9 +56,13 @@ class VADSlicer:
             self._quiet = 0
             if not self._active and self._above >= self.start_frames:
                 self._active = True
-                self._buf = bytearray()
+                # 补回判定期间的 start_ms 帧，否则每句话开头会丢一整个音节
+                self._buf = bytearray(b"".join(self._pre))
+            if not self._active:
+                self._pre.append(pcm)
         else:
             self._above = 0
+            self._pre.clear()
             if self._active:
                 self._quiet += 1
         if self._active:

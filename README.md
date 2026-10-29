@@ -31,12 +31,15 @@ VAD 阈值按拾音距离调整：远场（跨房间）用 150–200，近场可
 - 板子 IP 默认取**最近一次上行包的来源地址**，不用手填；没收到包时退回 `board_ip`。
 - 音色由 `tts_voice` 决定：中文默认 `Microsoft Huihui Desktop`，英文可换 `Microsoft Zira Desktop`。
 - 合成优先走进程内 COM（pywin32），失败自动退回 PowerShell 调 SAPI。
-- **已知限制**：扬声器和麦克风在同一块板子上，朗读的声音会被麦克风采回来，可能出现重复转写；要彻底消除需要 AEC，或在朗读期间暂停 VAD。
+- **回声处理**：扬声器和麦克风在同一块板子上，朗读声会被采回来重复转写。现在的做法是朗读期间
+  **静音麦克风**（`micapp/gate.py`）：播放中丢弃上行音频，播完再等 350 ms 混响尾巴，期间把进行中的
+  语音段作废。尾巴时长可用 config 的 `mic_mute_tail_s` 调整。真正的全双工需要设备端 AEC
+  （esp-sr AFE，要求 PSRAM），见 `rust-esp32/docs/research/2026-10-29-audio-pipeline-research.md`。
 
 ## 架构
 
 ```
-UdpReceiver(AUD0解包) → VADSlicer(能量VAD切段) → STTEngine(可插拔) → Qt 信号 → PySide6 界面
+UdpReceiver(AUD0解包 + 乱序重排) → MicGate(朗读期间静音) → VADSlicer(能量VAD切段) → STTEngine → Qt 信号 → 界面
                                                         ↑
                           输入框 ── SAPI 合成 ──→ UDP 5001 ──→ 板子扬声器
 ```
@@ -52,6 +55,7 @@ UdpReceiver(AUD0解包) → VADSlicer(能量VAD切段) → STTEngine(可插拔) 
       -p 8390:8390 whisper-stt python /w/stt_server.py
     ```
     切换：config 里 `"stt_engine": "whisper_http"`。
+- 收包端带 3 帧（60 ms）乱序重排缓冲：早到的包先缓存，缺口 60 ms 内补上就按序放行，否则记一次丢包继续播；重复包直接丢弃。丢包数按「实际播放顺序」统计，不会被乱序包带偏。
 - 转写历史自动写入 `logs/transcript_YYYYMMDD.txt`；引擎错误写入 `log.txt`。
 - 线程模型：收包/VAD/STT/TTS 各自线程，跨线程只 emit Qt 信号，界面更新一律在 GUI 线程槽里做。
 
