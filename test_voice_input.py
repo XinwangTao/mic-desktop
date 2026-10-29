@@ -80,6 +80,19 @@ def main():
         return VoiceInput(lambda s: None, lambda a, b: None, lambda: False,
                           lambda: False, state_path=state_path).enabled
 
+    # 放行模式实例：同一套闸门，但 allow_console=True
+    vi_console = VoiceInput(
+        on_status=lambda s: None,
+        on_state=lambda on, paused: None,
+        is_self_foreground=lambda: False,
+        is_playing=lambda: False,
+        is_risky_target=lambda: True,
+        state_path=os.path.join(tmpdir, "state2.json"),
+        clock=lambda: t[0],
+        allow_console=True,
+    )
+    vi_console.set_enabled(True)
+
     offer_log = []
     brake_base = [None]
 
@@ -113,6 +126,12 @@ def main():
         ("risky", lambda: check("前台是终端 -> risky",
                                 vi.offer("后台服务重启一下", 2.0) == "risky")),
         (None, lambda: check("终端里一个字都不打", text() == "", repr(text()))),
+        ("risky", lambda: check("放行模式：终端里也能打字",
+                                vi_console.offer("放进终端的这句话", 2.0) == "typed")),
+        (None, lambda: check("放行模式：文字确实进去了",
+                             text().endswith("放进终端的这句话"), repr(text()))),
+        ("risky", lambda: check("放行模式：终端里回车也生效",
+                                vi_console.offer("回车", 2.0) == "enter")),
         (None, lambda: check("说「回车」-> enter", vi.offer("回车", 2.0) == "enter")),
         (None, lambda: check("真的插了一个换行", text().endswith("\n"), repr(text()))),
         (None, lambda: check("句子里的「回车」不当命令", vi.offer("回车键不太好使", 2.0) == "typed")),
@@ -138,8 +157,10 @@ def main():
                              typer.is_risky_window("CASCADIA_HOSTING_WINDOW_CLASS"))),
         (None, lambda: check("类名判定：普通窗口",
                              not typer.is_risky_window("Chrome_WidgetWin_1", "记事本"))),
-        (None, lambda: check("标题判定：管理员控制台",
-                             typer.is_risky_window("X", "管理员: Windows PowerShell"))),
+        (None, lambda: check("标题带「管理员」的普通窗口不算终端",
+                             not typer.is_risky_window("Chrome_WidgetWin_1", "管理员: 群聊"))),
+        (None, lambda: check("提权控制台仍按类名拦",
+                             typer.is_risky_window("ConsoleWindowClass", "管理员: Windows PowerShell"))),
     ]
 
     state = {"i": 0}

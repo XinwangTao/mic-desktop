@@ -12,5 +12,6 @@
     "rms_threshold": 170,
     "start_ms": 120,
     "hangover_ms": 1000
-  }
+  },
+  "voice_input_allow_console": false
 }

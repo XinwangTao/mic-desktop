@@ -141,11 +141,14 @@ RISKY_CLASSES = frozenset({
 
 
 def is_risky_window(cls: str, title: str = "") -> bool:
-    """纯函数，便于单测；标题里带「管理员」的控制台也算。"""
-    if cls in RISKY_CLASSES:
-        return True
-    low = (title or "").lower()
-    return low.startswith("administrator:") or "管理员:" in (title or "")
+    """纯函数，便于单测。
+
+    只按窗口类名判：提权后的 cmd / PowerShell 仍然是 ConsoleWindowClass、
+    提权的 Windows Terminal 仍然是 CASCADIA_HOSTING_WINDOW_CLASS，类名已经够用。
+    曾经用「标题里含『管理员:』」兜底，结果任何标题带这三个字的普通窗口
+    （群聊、文档）都被当成终端拦掉，实测踩过。
+    """
+    return cls in RISKY_CLASSES
 
 
 def press_key(vk: int):

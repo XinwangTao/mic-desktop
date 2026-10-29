@@ -535,9 +535,14 @@ class MainWindow(QWidget):
     def is_risky_target(self) -> bool:
         """前台是控制台/终端：不注入，避免一句话变成半条命令。"""
         try:
+            import logging
             from micapp.typer import foreground_info, is_risky_window
             _hwnd, cls, title = foreground_info()
-            return is_risky_window(cls, title)
+            risky = is_risky_window(cls, title)
+            if risky:
+                # 被拦时把真实类名记下来：误拦一次就要能立刻看出是哪个窗口
+                logging.info("risky target: cls=%r title=%r", cls, title[:60])
+            return risky
         except Exception:
             return False
 

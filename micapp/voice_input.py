@@ -28,13 +28,15 @@ class VoiceInput:
     def __init__(self, on_status, on_state, is_self_foreground, is_playing, state_path,
                  min_seconds: float = 0.6, min_chars: int = 2, brake_count: int = 3,
                  brake_window_s: float = 2.0, dedupe_window: int = 3, clock=time.monotonic,
-                 is_risky_target=None):
+                 is_risky_target=None, allow_console: bool = False):
         self.on_status = on_status or (lambda _s: None)
         self.on_state = on_state or (lambda _on, _paused: None)
         self.is_self_foreground = is_self_foreground or (lambda: False)
         self.is_playing = is_playing or (lambda: False)
-        # 前台是终端/控制台时不能注入：一句话识别错就可能变成半条命令
+        # 前台是终端/控制台时默认不注入：一句话识别错就可能变成半条命令。
+        # allow_console=True 是用户显式开的例外，此时文字照打，但「回车」指令仍然禁用。
         self.is_risky_target = is_risky_target or (lambda: False)
+        self.allow_console = bool(allow_console)
         self.state_path = state_path
         self.min_seconds = min_seconds
         self.min_chars = min_chars
@@ -127,13 +129,15 @@ class VoiceInput:
             self.on_status("焦点在本应用，这句只显示在聊天区")
             return "own_window"
 
-        if self.is_risky_target():
+        if self.is_risky_target() and not self.allow_console:
             self._recent.append(norm)
             self.skipped += 1
             self.on_status("当前窗口是终端，这句没有上屏（免得误识别变成命令）")
             return "risky"
 
         if norm in ENTER_WORDS:
+            # 放行终端时回车同样生效：用户明确要求「终端里也能用回车」。
+            # 这也意味着终端里一句误识别的「回车」会直接执行那行命令。
             self._recent.append(norm)
             ok, reason = typer.press_enter()
             if not ok:
