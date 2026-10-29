@@ -51,7 +51,7 @@ class XfyunEngine(STTEngine):
         try:
             self._q.put_nowait((self._utterance_no, pcm))
         except queue.Full:
-            pass  # 云端跟不上时丢弃最旧的会在 worker 侧体现，这里保收包线程
+            self._drop(self._utterance_no, "队列满")  # 云端跟不上时丢这句，别堵住收包线程
 
     def _loop(self):
         while not self._stop.is_set():
@@ -63,10 +63,12 @@ class XfyunEngine(STTEngine):
                 text = self._transcribe(pcm)
                 if text and self.on_result:
                     self.on_result(text, idx)
+                else:
+                    self._drop(idx, "空结果")
             except Exception as e:
+                # 错误文字绝不能走 on_result：语音输入会把「[识别错误: …]」当真话打进前台窗口
                 logging.exception("xfyun utterance %s failed", idx)
-                if self.on_result:
-                    self.on_result(f"[识别错误: {e}]", idx)
+                self._drop(idx, "转写失败: %s" % e)
 
     def _make_url(self) -> str:
         host, path = "iat-api.xfyun.cn", "/v2/iat"

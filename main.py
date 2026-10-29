@@ -16,7 +16,7 @@ from micapp.stt import base as stt_base
 from micapp.stt import xfyun  # noqa: F401 注册引擎
 from micapp.stt import whisper_http  # noqa: F401 注册引擎
 from micapp.gate import build_gate
-from micapp.hotkey import VK_F9, GlobalHotkey
+from micapp.hotkey import MOD_SHIFT, VK_F9, GlobalHotkey
 from micapp.readback import Readback
 from micapp.ui import QSS, MainWindow
 from micapp.udp_receiver import UdpReceiver
@@ -71,6 +71,7 @@ def main() -> int:
         on_status=lambda s: window.ui("status", s),
         on_state=on_voice_state,
         is_self_foreground=window.is_self_foreground,
+        is_risky_target=window.is_risky_target,
         is_playing=lambda: window.speaker.busy,
         state_path=os.path.join(os.path.dirname(config.config_path()), "state.json"),
         min_seconds=float(cfg.get("voice_input_min_seconds", 0.6)),
@@ -110,6 +111,9 @@ def main() -> int:
             logging.info("readback skip (%s): %s", action, text)
 
     engine.on_result = on_result
+    # 转写失败 / 队列满 / 空结果也占掉一条时长，否则后面每句都挂着上一句的时长，
+    # 「太短」闸门会越错越远（曾经出现过：真实 3 秒的话按咳嗽的 0.4 秒被丢掉）
+    engine.on_drop = lambda _idx: durations.popleft() if durations else None
     engine.start()
 
     def on_utterance(pcm):
@@ -167,7 +171,8 @@ def main() -> int:
 
     if str(cfg.get("input_mode", "udp")).lower() == "ble":
         from micapp.ble_receiver import BleReceiver
-        receiver = BleReceiver(on_audio, name_prefix=cfg.get("ble_name_prefix", "MicDesktop-"))
+        receiver = BleReceiver(on_audio, name_prefix=cfg.get("ble_name_prefix", "MicDesktop-"),
+                               on_control=lambda ev: window.ui("board_event", ev))
         window.speaker.ble = receiver   # 下行 TTS 改走 BLE 的 RX 特征
         logging.info("input mode: ble (prefix=%s)", cfg.get("ble_name_prefix", "MicDesktop-"))
     else:
@@ -198,14 +203,18 @@ def main() -> int:
     receiver.start()
     window.show()
 
-    # 全局热键 F9：暂停/恢复语音输入。注册失败（被别的程序占了）只警告，不影响主流程。
-    hotkey = GlobalHotkey(VK_F9, lambda: window.ui("hotkey_voice"))
+    # 全局热键：F9 暂停/恢复，Shift+F9 硬开关。注册失败（被占用了）只警告，不影响主流程。
+    hotkey = GlobalHotkey(VK_F9, lambda: window.ui("hotkey_voice"), hk_id=1)
+    hotkey_toggle = GlobalHotkey(VK_F9, lambda: window.ui("hotkey_toggle"),
+                                 name="hotkey-toggle", mods=MOD_SHIFT, hk_id=2)
     hotkey.start()
+    hotkey_toggle.start()
 
     try:
         return app.exec()
     finally:
         hotkey.stop()
+        hotkey_toggle.stop()
         receiver.stop()
         engine.stop()
 

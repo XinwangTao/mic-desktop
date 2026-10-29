@@ -25,12 +25,15 @@ QUICK_RETRY_S = 1.5     # 已知设备地址时的重连间隔上限（不走扫
 class BleReceiver(threading.Thread):
     """后台收包线程；stats() 返回与 UdpReceiver 相同的字段集合。"""
 
-    def __init__(self, on_audio, name_prefix="MicDesktop-", stall_s: float = 0.25):
+    def __init__(self, on_audio, name_prefix="MicDesktop-", stall_s: float = 0.25,
+                 on_control=None):
         super().__init__(daemon=True, name="ble-receiver")
         self.on_audio = on_audio
+        # 板载按键等「事件类」控制帧：on_control(事件名)，如 "voice_toggle"
+        self.on_control = on_control
         self.name_prefix = name_prefix
         self.stall_s = stall_s
-        self._stop = threading.Event()
+        self._cancel = threading.Event()
         self._lock = threading.Lock()
         self._loop = None
         self._client = None
@@ -57,7 +60,7 @@ class BleReceiver(threading.Thread):
             self.status = "蓝牙不可用：%s" % exc
 
     def stop(self):
-        self._stop.set()
+        self._cancel.set()
         client = self._client
         loop = self._loop
         if client is not None and loop is not None:
@@ -76,7 +79,7 @@ class BleReceiver(threading.Thread):
 
         self._loop = asyncio.get_running_loop()
         backoff = 1.0
-        while not self._stop.is_set():
+        while not self._cancel.is_set():
             client, name = None, None
 
             # 快路：连过一次就按地址直连。扫描一次要 5 秒，断线后光等扫描
@@ -118,9 +121,9 @@ class BleReceiver(threading.Thread):
                         self._stats["addr"] = name
                     await client.start_notify(TX_UUID, self._on_notify)
                     backoff = 1.0
-                    while client.is_connected and not self._stop.is_set():
+                    while client.is_connected and not self._cancel.is_set():
                         await asyncio.sleep(self.stall_s)
-                    if not self._stop.is_set():
+                    if not self._cancel.is_set():
                         self.status = "连接断开，准备重连"
             except Exception as exc:
                 self.status = "连接失败：%s" % exc
@@ -142,7 +145,7 @@ class BleReceiver(threading.Thread):
                         await client.disconnect()
                     except Exception:
                         pass
-            if not self._stop.is_set():
+            if not self._cancel.is_set():
                 # 知道地址时不用长退避：直连本身几秒内就能重试一次
                 await asyncio.sleep(min(backoff, QUICK_RETRY_S) if self._addr else backoff)
                 backoff = min(MAX_BACKOFF_S, backoff * 2)
@@ -174,6 +177,10 @@ class BleReceiver(threading.Thread):
                 self.last_stat = text
             elif text.startswith("NS "):
                 self.last_ns = text
+            elif text == "VI":
+                # 板子上的 BOOT 键被按下：切一次语音输入的开关
+                if self.on_control:
+                    self.on_control("voice_toggle")
             return
 
         decoded = adpcm.decode(raw)

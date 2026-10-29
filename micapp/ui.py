@@ -146,6 +146,8 @@ class MainWindow(QWidget):
     sig_ns = Signal(bool)                     # 板子自报的降噪状态
     sig_voice = Signal(bool, bool)            # 语音输入：开启?, 已暂停?
     sig_hotkey = Signal()                     # 全局热键（在热键线程触发，转给 GUI 线程）
+    sig_hotkey_toggle = Signal()              # Shift+F9：语音输入硬开关
+    sig_board = Signal(str)                   # 板子发来的事件帧（BOOT 键等）
 
     def __init__(self, cfg: dict, receiver=None, engine=None):
         super().__init__()
@@ -178,6 +180,8 @@ class MainWindow(QWidget):
         self.sig_ns.connect(self._on_ns_state)
         self.sig_voice.connect(self._on_voice_state)
         self.sig_hotkey.connect(self._on_hotkey_voice)
+        self.sig_hotkey_toggle.connect(self._on_hotkey_toggle)
+        self.sig_board.connect(self._on_board_event)
         # 句柄在 GUI 线程先取好：语音输入在转写线程里判「前台是不是自己」，
         # winId() 不是线程安全的，那边只读这个缓存值。
         self._hwnd = int(self.winId())
@@ -363,6 +367,10 @@ class MainWindow(QWidget):
             self.sig_voice.emit(bool(args[0]), bool(args[1]) if len(args) > 1 else False)
         elif kind == "hotkey_voice":
             self.sig_hotkey.emit()
+        elif kind == "hotkey_toggle":
+            self.sig_hotkey_toggle.emit()
+        elif kind == "board_event":
+            self.sig_board.emit(str(args[0]))
 
     # ---------- 槽 ----------
     def _on_text(self, text, _idx):
@@ -502,6 +510,16 @@ class MainWindow(QWidget):
         if self.voice is not None:
             self.voice.toggle_pause()
 
+    def _on_board_event(self, event):
+        """板载 BOOT 键：和界面按钮、Shift+F9 同一个动作。"""
+        if event == "voice_toggle" and self.voice is not None:
+            self.voice.toggle()
+
+    def _on_hotkey_toggle(self):
+        # Shift+F9：硬开关，和界面按钮同一个动作，状态照样落盘
+        if self.voice is not None:
+            self.voice.toggle()
+
     def _on_voice_state(self, on, paused):
         if on and paused:
             text, obj = "语音输入 暂停", "ghostWarn"
@@ -513,6 +531,15 @@ class MainWindow(QWidget):
         self.btn_vi.setObjectName(obj)
         self.btn_vi.style().unpolish(self.btn_vi)
         self.btn_vi.style().polish(self.btn_vi)
+
+    def is_risky_target(self) -> bool:
+        """前台是控制台/终端：不注入，避免一句话变成半条命令。"""
+        try:
+            from micapp.typer import foreground_info, is_risky_window
+            _hwnd, cls, title = foreground_info()
+            return is_risky_window(cls, title)
+        except Exception:
+            return False
 
     def is_self_foreground(self) -> bool:
         """语音输入往「前台窗口」打字；前台就是自己时不能打，否则打进自己的输入框。"""

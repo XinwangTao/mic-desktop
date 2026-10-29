@@ -9,6 +9,7 @@ import logging
 import time
 
 INPUT_KEYBOARD = 1
+VK_RETURN = 0x0D
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 ERROR_ACCESS_DENIED = 5
@@ -108,3 +109,59 @@ def copy_to_clipboard(text: str) -> bool:
 
 def foreground_handle() -> int:
     return int(_user32.GetForegroundWindow() or 0)
+
+
+def _window_text(hwnd, which: int) -> str:
+    """which=0 取窗口标题，which=1 取类名。"""
+    buf = ctypes.create_unicode_buffer(512)
+    if which == 0:
+        _user32.GetWindowTextW(ctypes.c_void_p(hwnd), buf, 512)
+    else:
+        _user32.GetClassNameW(ctypes.c_void_p(hwnd), buf, 512)
+    return buf.value
+
+
+def foreground_info() -> tuple:
+    """返回 (句柄, 类名, 标题)；拿不到就给空串。"""
+    hwnd = foreground_handle()
+    if not hwnd:
+        return 0, "", ""
+    return hwnd, _window_text(hwnd, 1), _window_text(hwnd, 0)
+
+
+# 往这些窗口里「说话变打字」= 可能执行命令，误识别的代价远大于省一次键盘。
+# 注意：VS Code / JetBrains 的内置终端类名和主窗口一样，这里识别不出来，属于已知局限。
+RISKY_CLASSES = frozenset({
+    "ConsoleWindowClass",          # conhost（cmd / PowerShell 5 窗口）
+    "CASCADIA_HOSTING_WINDOW_CLASS",  # Windows Terminal
+    "mintty",                      # Git Bash
+    "PuTTY",
+    "KiTTY",
+})
+
+
+def is_risky_window(cls: str, title: str = "") -> bool:
+    """纯函数，便于单测；标题里带「管理员」的控制台也算。"""
+    if cls in RISKY_CLASSES:
+        return True
+    low = (title or "").lower()
+    return low.startswith("administrator:") or "管理员:" in (title or "")
+
+
+def press_key(vk: int):
+    """按一下普通按键（不带 Unicode 标志），返回 (成功?, 原因)。"""
+    for flags in (0, KEYEVENTF_KEYUP):
+        ev = _INPUT(type=INPUT_KEYBOARD)
+        ev.ki = _KEYBDINPUT(wVk=vk, wScan=0, dwFlags=flags, time=0, dwExtraInfo=0)
+        if _user32.SendInput(1, ctypes.byref(ev), ctypes.sizeof(_INPUT)) != 1:
+            err = ctypes.get_last_error()
+            logging.warning("SendInput 按键失败 vk=0x%02X err=%d", vk, err)
+            if err == ERROR_ACCESS_DENIED:
+                return False, "目标程序权限更高（UAC 隔离）"
+            return False, "目标窗口没有接收键盘输入"
+        time.sleep(0.004)
+    return True, ""
+
+
+def press_enter():
+    return press_key(VK_RETURN)

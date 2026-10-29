@@ -21,7 +21,7 @@ class UdpReceiver(threading.Thread):
         self.port = port
         self.on_audio = on_audio                     # on_audio(pcm, flags)
         self.reorder_hold = max(0, reorder_hold)   # 乱序缓存帧数，1 帧 = 20ms
-        self._stop = threading.Event()
+        self._cancel = threading.Event()
         self._lock = threading.Lock()
         self._stats = {"addr": "-", "packets": 0, "lost": 0, "bad": 0, "reordered": 0,
                        "speech_pkts": 0, "pkt_rate": 0.0, "samples_rate": 0.0}
@@ -37,7 +37,7 @@ class UdpReceiver(threading.Thread):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 21)
         sock.bind(("0.0.0.0", self.port))
         sock.settimeout(0.02)
-        while not self._stop.is_set():
+        while not self._cancel.is_set():
             try:
                 packet, addr = sock.recvfrom(65535)
             except socket.timeout:
@@ -141,4 +141,4 @@ class UdpReceiver(threading.Thread):
             return dict(self._stats)
 
     def stop(self):
-        self._stop.set()
+        self._cancel.set()

@@ -15,6 +15,11 @@ from collections import deque
 from micapp import typer
 
 
+# 说这两个词时按下回车，而不是把这两个字打出来。只认整句，避免把句子里的
+# 「回车键坏了」也变成一次回车。
+ENTER_WORDS = frozenset({"回车", "换行"})
+
+
 def normalize(text: str) -> str:
     return "".join(ch for ch in text if ch.isalnum())
 
@@ -22,11 +27,14 @@ def normalize(text: str) -> str:
 class VoiceInput:
     def __init__(self, on_status, on_state, is_self_foreground, is_playing, state_path,
                  min_seconds: float = 0.6, min_chars: int = 2, brake_count: int = 3,
-                 brake_window_s: float = 2.0, dedupe_window: int = 3, clock=time.monotonic):
+                 brake_window_s: float = 2.0, dedupe_window: int = 3, clock=time.monotonic,
+                 is_risky_target=None):
         self.on_status = on_status or (lambda _s: None)
         self.on_state = on_state or (lambda _on, _paused: None)
         self.is_self_foreground = is_self_foreground or (lambda: False)
         self.is_playing = is_playing or (lambda: False)
+        # 前台是终端/控制台时不能注入：一句话识别错就可能变成半条命令
+        self.is_risky_target = is_risky_target or (lambda: False)
         self.state_path = state_path
         self.min_seconds = min_seconds
         self.min_chars = min_chars
@@ -118,6 +126,22 @@ class VoiceInput:
             self.skipped += 1
             self.on_status("焦点在本应用，这句只显示在聊天区")
             return "own_window"
+
+        if self.is_risky_target():
+            self._recent.append(norm)
+            self.skipped += 1
+            self.on_status("当前窗口是终端，这句没有上屏（免得误识别变成命令）")
+            return "risky"
+
+        if norm in ENTER_WORDS:
+            self._recent.append(norm)
+            ok, reason = typer.press_enter()
+            if not ok:
+                self.on_status("回车没有按下去：%s" % reason)
+                return "failed"
+            self.typed += 1
+            self.on_status("已按回车")
+            return "enter"
 
         ok, reason = typer.type_text(text)
         self._recent.append(norm)

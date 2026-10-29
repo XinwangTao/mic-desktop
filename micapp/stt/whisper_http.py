@@ -36,6 +36,7 @@ class WhisperHttpEngine(STTEngine):
     def start(self):
         self._q: queue.Queue = queue.Queue(maxsize=32)
         self._stop = threading.Event()
+        self._failing = False      # 上次转写是否失败；恢复时状态行要说一句，别一直挂着「不可用」
         self._no = 0
         self._worker = threading.Thread(target=self._loop, daemon=True, name="whisper-http-worker")
         self._worker.start()
@@ -55,7 +56,7 @@ class WhisperHttpEngine(STTEngine):
         try:
             self._q.put_nowait((self._no, pcm))
         except queue.Full:
-            pass
+            self._drop(self._no, "队列满")
 
     # ---------- 内部 ----------
     def _url(self) -> str:
@@ -99,10 +100,17 @@ class WhisperHttpEngine(STTEngine):
                     text = self._transcribe(url, pcm)
                 except Exception as exc:
                     logging.exception("whisper_http utterance %s failed twice", idx)
+                    self._failing = True
                     self._status("本地转写失败：%s（这句跳过）" % _short(exc))
+                    self._drop(idx, "转写失败")
                     continue
+            if self._failing:
+                self._failing = False
+                self._status("本地转写服务已恢复")
             if text and self.on_result:
                 self.on_result(text, idx)
+            else:
+                self._drop(idx, "空结果")
 
     @staticmethod
     def _transcribe(url: str, pcm: bytes) -> str:
