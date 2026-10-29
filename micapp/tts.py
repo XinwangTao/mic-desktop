@@ -105,6 +105,20 @@ def send_pcm(ip: str, port: int, pcm: bytes, stop_event: threading.Event = None)
     return time.monotonic() - t0
 
 
+def send_control(ip: str, port: int, text: str) -> bool:
+    """发一条下行控制帧（STAT / TONE / NS:on|off），只发不等回包。"""
+    if not ip:
+        return False
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.sendto(text.encode("utf-8"), (ip, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
 class Speaker:
     """后台线程播报，避免阻塞界面。"""
 
@@ -113,6 +127,10 @@ class Speaker:
         self.voice = voice
         self._stop = threading.Event()
         self._thread = None
+
+    def control(self, ip: str, text: str) -> bool:
+        """下行控制帧：不走播报线程，免得和正在播放的音频抢时序。"""
+        return send_control(ip, self.port, text)
 
     @property
     def busy(self) -> bool:

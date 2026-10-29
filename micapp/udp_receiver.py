@@ -7,6 +7,7 @@ import time
 HEADER = struct.Struct("<4sBBHIIHH")  # 20B 小端 packed，与固件 lib.rs 一致
 MAGIC = b"AUD0"
 VERSION = 1
+FLAG_SPEECH = 0x01   # 固件 AFE 判为语音时置位；老固件恒 0
 
 HOLD_S = 0.06   # 缺口最多等 60ms，等不到就当作丢包放行
 
@@ -18,12 +19,12 @@ class UdpReceiver(threading.Thread):
     def __init__(self, port: int, on_audio, reorder_hold: int = 3):
         super().__init__(daemon=True, name="udp-receiver")
         self.port = port
-        self.on_audio = on_audio
+        self.on_audio = on_audio                     # on_audio(pcm, flags)
         self.reorder_hold = max(0, reorder_hold)   # 乱序缓存帧数，1 帧 = 20ms
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._stats = {"addr": "-", "packets": 0, "lost": 0, "bad": 0, "reordered": 0,
-                       "pkt_rate": 0.0, "samples_rate": 0.0}
+                       "speech_pkts": 0, "pkt_rate": 0.0, "samples_rate": 0.0}
         self._play_seq = None          # 下一个该播的包序号
         self._pending = {}             # 早到的包：seq -> pcm
         self._pending_at = 0.0
@@ -48,7 +49,7 @@ class UdpReceiver(threading.Thread):
                 with self._lock:
                     self._stats["bad"] += 1
                 continue
-            magic, ver, _flags, hlen, seq, rate, samples, payload_len = HEADER.unpack_from(packet)
+            magic, ver, flags, hlen, seq, rate, samples, payload_len = HEADER.unpack_from(packet)
             if magic != MAGIC or ver != VERSION or hlen != HEADER.size:
                 with self._lock:
                     self._stats["bad"] += 1
@@ -63,27 +64,29 @@ class UdpReceiver(threading.Thread):
                 self._stats["addr"] = f"{addr[0]}:{addr[1]}"
                 self._win_pkts += 1
                 self._win_samples += samples
+                if flags & FLAG_SPEECH:
+                    self._stats["speech_pkts"] += 1
             try:
-                self._deliver(seq, payload)
+                self._deliver(seq, payload, flags)
             except Exception:
                 pass  # 下游异常不拖垮收包
             self._update_rate()
         sock.close()
 
     # ---------- 乱序重排 ----------
-    def _deliver(self, seq: int, payload: bytes):
+    def _deliver(self, seq: int, payload: bytes, flags: int = 0):
         """按 seq 顺序投递；乱序包最多缓存 reorder_hold 帧，超时/超限就按现有顺序放行。"""
         if self._play_seq is None:
             self._play_seq = (seq + 1) & 0xFFFFFFFF
-            self.on_audio(payload)
+            self.on_audio(payload, flags)
             return
         gap = (seq - self._play_seq) & 0xFFFFFFFF
         if gap == 0:
-            self.on_audio(payload)
+            self.on_audio(payload, flags)
             self._play_seq = (seq + 1) & 0xFFFFFFFF
             self._drain()
         elif gap <= self.reorder_hold:
-            self._pending[seq] = payload
+            self._pending[seq] = (payload, flags)
             self._pending_at = time.monotonic()
             with self._lock:
                 self._stats["reordered"] += 1
@@ -96,12 +99,13 @@ class UdpReceiver(threading.Thread):
             with self._lock:
                 self._stats["lost"] += gap
             self._flush_pending()
-            self.on_audio(payload)
+            self.on_audio(payload, flags)
             self._play_seq = (seq + 1) & 0xFFFFFFFF
 
     def _drain(self):
         while self._play_seq in self._pending:
-            self.on_audio(self._pending.pop(self._play_seq))
+            pcm, flags = self._pending.pop(self._play_seq)
+            self.on_audio(pcm, flags)
             self._play_seq = (self._play_seq + 1) & 0xFFFFFFFF
 
     def _flush_pending(self):
@@ -114,7 +118,8 @@ class UdpReceiver(threading.Thread):
             with self._lock:
                 self._stats["lost"] += missing
         for seq in seqs:
-            self.on_audio(self._pending.pop(seq))
+            pcm, flags = self._pending.pop(seq)
+            self.on_audio(pcm, flags)
             self._play_seq = (seq + 1) & 0xFFFFFFFF
 
     def _update_rate(self):

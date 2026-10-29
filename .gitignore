@@ -5,3 +5,4 @@ dist/*.exe
 *.idmpart.json
 dist/config.json
 log.txt
+dist/logs/

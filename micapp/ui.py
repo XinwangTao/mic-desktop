@@ -2,15 +2,17 @@
 
 线程安全：所有后台线程只 emit 信号，界面更新一律在 GUI 线程的槽里做。
 """
+import threading
 import time
 
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QLinearGradient, QPainter
+from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QSizeGrip, QSizePolicy, QToolButton, QVBoxLayout, QWidget,
 )
 
+from micapp.assets import APP_TITLE, APP_VERSION, asset_path
 from micapp.config import ENGINE_LABELS
 
 BG = "#0E1116"
@@ -50,8 +52,11 @@ QPushButton#primary:hover {{ background: #6AA0FF; }}
 QPushButton#primary:pressed {{ background: #3C79E0; }}
 QPushButton#primary:disabled {{ background: #2A3444; color: {MUTED}; }}
 QPushButton#ghost {{ background: transparent; border: 1px solid {BORDER}; border-radius: 10px;
-                     padding: 8px 16px; color: {MUTED}; }}
+                     padding: 6px 14px; color: {MUTED}; }}
 QPushButton#ghost:hover {{ border-color: {MUTED}; color: {INK}; }}
+QPushButton#ghostWarn {{ background: rgba(255,176,32,0.12); border: 1px solid rgba(255,176,32,0.45);
+                         border-radius: 10px; padding: 6px 14px; color: {WARN}; }}
+QPushButton#ghostWarn:hover {{ border-color: {WARN}; }}
 QToolButton {{ background: transparent; border: none; border-radius: 6px;
                color: {MUTED}; font-size: 15px; padding: 2px 9px; }}
 QToolButton:hover {{ background: {SURFACE_HI}; color: {INK}; }}
@@ -132,8 +137,10 @@ class Bubble(QFrame):
 class MainWindow(QWidget):
     sig_text = Signal(str, int)
     sig_stats = Signal(object)
-    sig_level = Signal(float)
+    sig_level = Signal(float, float, float)   # rms, 当前阈值, 底噪
     sig_status = Signal(str)
+    sig_mode = Signal(str, str)
+    sig_ns = Signal(bool)                     # 板子自报的降噪状态
 
     def __init__(self, cfg: dict, receiver=None, engine=None):
         super().__init__()
@@ -142,12 +149,15 @@ class MainWindow(QWidget):
         self.engine = engine
         self._drag_from = None
         self._bubbles = 0
+        self._ns_on = True          # 设备端降噪当前状态（A/B 开关）
+        self._vad_text = ""
 
         from micapp.tts import Speaker
         self.speaker = Speaker(port=cfg.get("speaker_port", 5001),
                                voice=cfg.get("tts_voice", "Microsoft Huihui Desktop"))
 
-        self.setWindowTitle("无线麦克风接收台 - ESP32-S3 INMP441")
+        self.setWindowTitle(f"{APP_TITLE} · ESP32-S3 INMP441")
+        self.setWindowIcon(QIcon(asset_path("appicon.png")))
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setMinimumSize(780, 560)
@@ -158,6 +168,8 @@ class MainWindow(QWidget):
         self.sig_stats.connect(self._on_stats)
         self.sig_level.connect(self._on_level)
         self.sig_status.connect(self._on_status)
+        self.sig_mode.connect(self._on_mode)
+        self.sig_ns.connect(self._on_ns_state)
 
     # ---------- 构建 ----------
     def _build(self):
@@ -206,18 +218,25 @@ class MainWindow(QWidget):
         lay.setContentsMargins(18, 12, 12, 6)
         lay.setSpacing(12)
 
-        avatar = QLabel("麦")
+        # 标题栏用应用图标当头像：比一个「麦」字更像个正经软件，也和 exe 图标一致
+        avatar = QLabel()
         avatar.setFixedSize(34, 34)
         avatar.setAlignment(Qt.AlignCenter)
-        avatar.setStyleSheet(
-            f"background:{ACCENT};color:#0B1220;border-radius:10px;font-weight:800;font-size:15px;")
+        icon = QPixmap(asset_path("appicon.png"))
+        if not icon.isNull():
+            avatar.setPixmap(icon.scaled(34, 34, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            avatar.setText("麦")
+            avatar.setStyleSheet(
+                f"background:{ACCENT};color:#0B1220;border-radius:10px;font-weight:800;"
+                f"font-size:15px;")
         lay.addWidget(avatar)
 
         col = QVBoxLayout()
         col.setSpacing(1)
-        title = QLabel("无线麦克风接收台")
+        title = QLabel(APP_TITLE)
         title.setObjectName("title")
-        self.lbl_sub = QLabel("ESP32-S3 · INMP441 · UDP")
+        self.lbl_sub = QLabel(f"ESP32-S3 · INMP441 · v{APP_VERSION}")
         self.lbl_sub.setObjectName("subtitle")
         col.addWidget(title)
         col.addWidget(self.lbl_sub)
@@ -252,9 +271,16 @@ class MainWindow(QWidget):
         engine = ENGINE_LABELS.get(self.cfg.get("stt_engine"), self.cfg.get("stt_engine", "-"))
         self.chip_engine = QLabel(f"引擎 {engine}")
         self.chip_engine.setObjectName("chipHi")
-        for w in (self.chip_dev, self.chip_rate, self.chip_lost, self.chip_engine):
+        self.chip_mode = QLabel("模式 探测中")
+        self.chip_mode.setObjectName("chip")
+        for w in (self.chip_dev, self.chip_rate, self.chip_lost, self.chip_mode, self.chip_engine):
             lay.addWidget(w)
         lay.addStretch(1)
+        self.lbl_vad = QLabel("底噪 – · 阈值 –")
+        self.lbl_vad.setObjectName("hint")
+        self.lbl_vad.setToolTip("底噪取最近 10 秒非语音帧的 P20；阈值 = 底噪 × 倍数，夹在上下限之间")
+        lay.addWidget(self.lbl_vad)
+        lay.addSpacing(6)
         self.meter = LevelMeter(wrap)
         lay.addWidget(self.meter, 0)
         self.meter.setFixedWidth(150)
@@ -279,13 +305,19 @@ class MainWindow(QWidget):
 
     def _build_footer(self, parent):
         wrap = QWidget(parent)
-        wrap.setFixedHeight(36)
+        wrap.setFixedHeight(46)   # 36 装不下带 padding 的按钮，文字会被上下切掉
         lay = QHBoxLayout(wrap)
-        lay.setContentsMargins(20, 2, 8, 8)
+        lay.setContentsMargins(20, 4, 8, 6)
         self.lbl_status = QLabel("就绪")
         self.lbl_status.setObjectName("hint")
         lay.addWidget(self.lbl_status)
         lay.addStretch(1)
+        self.btn_ns = QPushButton("降噪 开", wrap)
+        self.btn_ns.setObjectName("ghost")
+        self.btn_ns.setCursor(Qt.PointingHandCursor)
+        self.btn_ns.setToolTip("A/B 对照：关掉设备端降噪，对比上行底噪与转写结果，用来判断语音是被降噪压了还是被阈值挡了")
+        self.btn_ns.clicked.connect(self._toggle_ns)
+        lay.addWidget(self.btn_ns)
         btn_clear = QPushButton("清空", wrap)
         btn_clear.setObjectName("ghost")
         btn_clear.setCursor(Qt.PointingHandCursor)
@@ -300,11 +332,15 @@ class MainWindow(QWidget):
         if kind == "text":
             self.sig_text.emit(str(args[0]), int(args[1]) if len(args) > 1 else 0)
         elif kind == "level":
-            self.sig_level.emit(float(args[0]))
+            self.sig_level.emit(float(args[0]),
+                                float(args[1]) if len(args) > 1 else 0.0,
+                                float(args[2]) if len(args) > 2 else 0.0)
         elif kind == "stats":
             self.sig_stats.emit(args[0])
         elif kind == "status":
             self.sig_status.emit(str(args[0]))
+        elif kind == "mode":
+            self.sig_mode.emit(str(args[0]), str(args[1]) if len(args) > 1 else "")
 
     # ---------- 槽 ----------
     def _on_text(self, text, _idx):
@@ -319,20 +355,94 @@ class MainWindow(QWidget):
         self.chip_rate.setText("%.1f pkt/s" % s.get("pkt_rate", 0.0))
         self.chip_lost.setText("丢包 %d · 坏帧 %d" % (s.get("lost", 0), s.get("bad", 0)))
 
-    def _on_level(self, rms):
-        thr = float(self.cfg["vad"]["rms_threshold"])
-        self.meter.set_level(rms / (thr * 3.0), rms > thr)
+    def _on_level(self, rms, threshold, baseline):
+        """阈值是自适应的，电平条要按当前阈值归一化，不能再用 config 里的固定值。"""
+        thr = float(threshold) or 1.0
+        self.meter.set_level(float(rms) / (thr * 3.0), float(rms) >= thr)
+        # 50 Hz 回调，只在读数变化时才碰控件，免得 layout 每秒抖 50 次
+        txt = ("底噪 %d · 阈值 %d" % (round(baseline), round(thr))
+               if baseline > 0 else "底噪 – · 阈值 %d" % round(thr))
+        if txt != self._vad_text:
+            self._vad_text = txt
+            self.lbl_vad.setText(txt)
 
     def _on_status(self, text):
         self.lbl_status.setText(text)
 
+    def _on_mode(self, label, reason):
+        """全双工 / 半双工 + 判定依据，两者都放在看得见的地方。"""
+        self.chip_mode.setText("模式 " + label)
+        self.chip_mode.setObjectName("chipHi" if label.startswith("全") else "chip")
+        self.chip_mode.setToolTip(reason)
+        self.chip_mode.style().unpolish(self.chip_mode)
+        self.chip_mode.style().polish(self.chip_mode)
+        if reason:
+            self.lbl_status.setText(reason)
+
     # ---------- 交互 ----------
+    def board_ip(self) -> str:
+        """当前可用的板子 IP（最近一次上行来源优先，其次 config）。自动回读要用。"""
+        return self._board_ip()
+
     def _board_ip(self) -> str:
         if self.receiver is not None:
             addr = self.receiver.stats().get("addr", "-")
             if addr and addr != "-":
                 return addr.split(":")[0]
         return self.cfg.get("board_ip", "") or ""
+
+    def _toggle_ns(self):
+        """A/B 对照：下行 NS:on|off 切换设备端降噪。
+
+        目的只有一个——把「语音是被降噪压了」还是「被 VAD 阈值挡了」分开。
+        关掉降噪后上行变成 AEC 输出直通，底噪读数会上跳，语音却更完整。
+        """
+        ip = self._board_ip()
+        if not ip:
+            self.lbl_status.setText("板子不在线，无法切换降噪")
+            return
+        want = not self._ns_on
+        if not self.speaker.control(ip, "NS:on" if want else "NS:off"):
+            self.lbl_status.setText("降噪切换发送失败（板子 IP 不可达）")
+            return
+        self._ns_on = want
+        self._refresh_ns_button()
+        self.lbl_status.setText("设备端降噪已" + ("打开" if want else "关闭（A/B 对照）"))
+        self._verify_ns_async(ip)
+
+    def _verify_ns_async(self, ip):
+        """后台问一句 STAT，确认板子真的认了这条控制帧——老固件会静默忽略。"""
+        def run():
+            from micapp.gate import _stat_once
+            got = _stat_once((ip, self.speaker.port), 1.0)
+            if got is None:
+                self.sig_status.emit("降噪切换未见回包（可能是老固件）")
+                return
+            fields = {}
+            for tok in got[1].split():
+                if "=" in tok:
+                    key, _, val = tok.partition("=")
+                    fields[key] = val
+            if fields.get("afe") == "on":
+                # AFE 前端把 AEC/降噪/VAD 合成一条链，运行期单独关降噪没有意义
+                self.sig_status.emit("板子跑的是 AFE 前端，降噪由前端统一管理，A/B 开关不生效")
+                return
+            if "ns" in fields:
+                on = fields["ns"] == "on"
+                self.sig_ns.emit(on)              # 以板子自报为准，纠正按钮显示
+                self.sig_status.emit("板子确认：降噪 " + ("开" if on else "关"))
+                return
+            self.sig_status.emit("板子回包没有 ns= 字段（老固件）")
+
+    def _on_ns_state(self, on):
+        self._ns_on = bool(on)
+        self._refresh_ns_button()
+
+    def _refresh_ns_button(self):
+        self.btn_ns.setText("降噪 开" if self._ns_on else "降噪 关")
+        self.btn_ns.setObjectName("ghost" if self._ns_on else "ghostWarn")
+        self.btn_ns.style().unpolish(self.btn_ns)
+        self.btn_ns.style().polish(self.btn_ns)
 
     def _on_speak(self):
         text = self.edit.text().strip()
