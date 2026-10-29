@@ -106,7 +106,12 @@ def main() -> int:
     # 朗读期间静音麦克风（半双工），避免板子自己的声音被采回来重复转写。
     # 启动时问一次板子（STAT → aec=on|off）：有 AEC 就真全双工，没有才装门控。
     # config.json 里写死 on/off 可跳过探测，保留人工覆盖。
-    mic_gate, gate_reason = build_gate(slicer.feed, window.speaker, cfg, slicer)
+    # 蓝牙模式下板子不开 Wi-Fi，所有 UDP 探测（AEC 握手、STAT、TTS 下行）都不适用。
+    # 回读在 BLE 模式下暂不可用（下行 TTS 本轮没做），readback 会因为拿不到 IP 自动跳过。
+    if str(cfg.get("input_mode", "udp")).lower() == "ble":
+        mic_gate, gate_reason = None, "蓝牙模式：音频走 BLE，不做 UDP 探测，按全双工"
+    else:
+        mic_gate, gate_reason = build_gate(slicer.feed, window.speaker, cfg, slicer)
     gate = mic_gate if mic_gate is not None else slicer.feed
     window.gate = mic_gate
     logging.info("mic gate: %s", gate_reason)
@@ -121,7 +126,12 @@ def main() -> int:
         hint = bool(flags & FLAG_SPEECH) if (flags & FLAG_VAD_VALID) else None
         gate(pcm, hint)
 
-    receiver = UdpReceiver(cfg["udp_port"], on_audio)
+    if str(cfg.get("input_mode", "udp")).lower() == "ble":
+        from micapp.ble_receiver import BleReceiver
+        receiver = BleReceiver(on_audio, name_prefix=cfg.get("ble_name_prefix", "MicDesktop-"))
+        logging.info("input mode: ble (prefix=%s)", cfg.get("ble_name_prefix", "MicDesktop-"))
+    else:
+        receiver = UdpReceiver(cfg["udp_port"], on_audio)
     window.receiver = receiver
 
     timer = QTimer()

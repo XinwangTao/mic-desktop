@@ -7,6 +7,9 @@ DEFAULTS = {
     "udp_port": 5000,
     "speaker_port": 5001,
     "board_ip": "",
+    # 音频上行来源："udp"（Wi-Fi）或 "ble"。固件侧二选一，两边要一致。
+    "input_mode": "udp",
+    "ble_name_prefix": "MicDesktop-",
     "stt_engine": "xfyun",
     "language": "zh_cn",
     "xfyun": {"app_id": "", "api_key": "", "api_secret": ""},

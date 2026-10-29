@@ -16,6 +16,7 @@ Set-Location 'F:\projects\mic-desktop'
   --icon 'F:\projects\mic-desktop\micapp\assets\appicon.ico' `
   --version-file 'F:\projects\mic-desktop\packaging\version_info.txt' `
   --add-data 'F:\projects\mic-desktop\micapp\assets;micapp\assets' `
+  --collect-all bleak --collect-submodules winrt `
   --collect-data certifi --hidden-import win32com.client --hidden-import pythoncom `
   --exclude-module tkinter --exclude-module numpy --exclude-module matplotlib main.py *> 'F:\cache\pyinstaller.log'
 exit $LASTEXITCODE

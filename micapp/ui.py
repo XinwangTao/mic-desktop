@@ -387,7 +387,8 @@ class MainWindow(QWidget):
     def _board_ip(self) -> str:
         if self.receiver is not None:
             addr = self.receiver.stats().get("addr", "-")
-            if addr and addr != "-":
+            # UDP 版是 "ip:port"；BLE 版的 addr 是设备名，没有 IP，别当成主机名去发 UDP
+            if addr and addr != "-" and addr.count(":") == 1:
                 return addr.split(":")[0]
         return self.cfg.get("board_ip", "") or ""
 
