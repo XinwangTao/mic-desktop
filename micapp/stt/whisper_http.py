@@ -10,10 +10,23 @@ import json
 import logging
 import queue
 import threading
+import time
 import urllib.request
 import wave
 
 from .base import STTEngine, register
+
+DEFAULT_URL = "http://127.0.0.1:8390/stt"
+
+
+def _short(exc: Exception) -> str:
+    """异常压成一句人话：完整 traceback 进日志，界面只留关键信息。"""
+    text = str(exc)
+    if "Connection refused" in text or "10061" in text:
+        return "连接被拒绝，服务没在运行"
+    if "timed out" in text or "timeout" in text.lower():
+        return "请求超时"
+    return text[:80]
 
 
 @register
@@ -26,6 +39,9 @@ class WhisperHttpEngine(STTEngine):
         self._no = 0
         self._worker = threading.Thread(target=self._loop, daemon=True, name="whisper-http-worker")
         self._worker.start()
+        # 启动就探一次：服务没起的话，用户开口之前就该知道，
+        # 而不是等第一句话变成一条错误气泡。
+        threading.Thread(target=self._probe, daemon=True, name="whisper-http-probe").start()
 
     def stop(self):
         self._stop.set()
@@ -41,8 +57,34 @@ class WhisperHttpEngine(STTEngine):
         except queue.Full:
             pass
 
+    # ---------- 内部 ----------
+    def _url(self) -> str:
+        return self.config.get("whisper_http", {}).get("url", DEFAULT_URL)
+
+    def _status(self, text: str):
+        """给界面一条状态；没接回调就只写日志，不抛。"""
+        cb = getattr(self, "status_cb", None)
+        if cb is None:
+            logging.info("whisper_http: %s", text)
+            return
+        try:
+            cb(text)
+        except Exception:
+            logging.exception("status_cb 调用失败")
+
+    def _probe(self):
+        try:
+            t0 = time.monotonic()
+            # 0.5 秒静音只探可达性：服务端有 VAD 过滤，静音不会真跑模型（实测 0.05 秒返回）
+            self._transcribe(self._url(), b"\x00\x00" * 4000)
+            self._status("本地转写服务就绪（%.2f 秒响应）" % (time.monotonic() - t0))
+        except Exception as exc:
+            logging.exception("whisper_http probe failed")
+            self._status("本地转写服务不可用：%s —— 执行 docker start whisper-local"
+                         % _short(exc))
+
     def _loop(self):
-        url = self.config.get("whisper_http", {}).get("url", "http://127.0.0.1:8390/stt")
+        url = self._url()
         while not self._stop.is_set():
             item = self._q.get()
             if item is None:
@@ -50,12 +92,17 @@ class WhisperHttpEngine(STTEngine):
             idx, pcm = item
             try:
                 text = self._transcribe(url, pcm)
-                if text and self.on_result:
-                    self.on_result(text, idx)
-            except Exception as e:
-                logging.exception("whisper_http utterance %s failed", idx)
-                if self.on_result:
-                    self.on_result(f"[本地识别错误: {e}]", idx)
+            except Exception:
+                # 容器刚起或偶发超时：重试一次，别把一次抖动变成一条错误气泡
+                time.sleep(0.8)
+                try:
+                    text = self._transcribe(url, pcm)
+                except Exception as exc:
+                    logging.exception("whisper_http utterance %s failed twice", idx)
+                    self._status("本地转写失败：%s（这句跳过）" % _short(exc))
+                    continue
+            if text and self.on_result:
+                self.on_result(text, idx)
 
     @staticmethod
     def _transcribe(url: str, pcm: bytes) -> str:
@@ -68,5 +115,6 @@ class WhisperHttpEngine(STTEngine):
         w.close()
         req = urllib.request.Request(url, data=buf.getvalue(),
                                      headers={"Content-Type": "audio/wav"})
-        with urllib.request.urlopen(req, timeout=120) as r:
+        # 30 秒足够跑完 10 分钟的音频；原来 120 秒会让服务卡死时界面空等两分钟
+        with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read()).get("text", "").strip()

@@ -50,6 +50,9 @@ def main() -> int:
 
     engine = stt_base.create(cfg["stt_engine"], cfg, on_result=None)
     window = MainWindow(cfg, receiver=None, engine=engine)
+    # 引擎自报状态（本地服务不可用、转写失败等）显示在状态行，
+    # 别让用户只看到一句抛异常的英文。
+    engine.status_cb = lambda s: window.ui("status", s)
 
     # 自动回读：说完一句就自动念出来。默认关，config.json 里 auto_speak=true 才生效。
     # 去重 / 刹车 / 排队都在 Readback 里，任何一道拦下都只跳过这一句。
