@@ -19,6 +19,7 @@ TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
 SCAN_TIMEOUT_S = 5.0
 MAX_BACKOFF_S = 10.0
+QUICK_RETRY_S = 1.5     # 已知设备地址时的重连间隔上限（不走扫描）
 
 
 class BleReceiver(threading.Thread):
@@ -36,6 +37,8 @@ class BleReceiver(threading.Thread):
         self._stats = {"addr": "-", "packets": 0, "lost": 0, "bad": 0, "reordered": 0,
                        "speech_pkts": 0, "pkt_rate": 0.0, "samples_rate": 0.0}
         self._expect_seq = None
+        self._addr = None        # 上次连上的设备地址，断线后按地址直连，省掉扫描
+        self._name = None
         self._win_start = None
         self._win_pkts = 0
         self._win_samples = 0
@@ -74,21 +77,45 @@ class BleReceiver(threading.Thread):
         self._loop = asyncio.get_running_loop()
         backoff = 1.0
         while not self._stop.is_set():
-            device = await self._find(BleakScanner)
-            if device is None:
-                self.status = "未找到 %s*，%.0f 秒后重试" % (self.name_prefix, backoff)
-                await asyncio.sleep(backoff)
-                backoff = min(MAX_BACKOFF_S, backoff * 2)
-                continue
+            client, name = None, None
 
-            self.status = "正在连接 %s" % device.name
+            # 快路：连过一次就按地址直连。扫描一次要 5 秒，断线后光等扫描
+            # 就白白多 5 秒；无线麦断一下等 15 秒没人能忍。
+            if self._addr:
+                try:
+                    client = BleakClient(self._addr, timeout=4.0)
+                    await client.connect()
+                    name = self._name or self._addr
+                except Exception:
+                    client = None
+                    self.status = "按地址直连失败，重新扫描"
+                    self._addr = None
+
+            if client is None:
+                device = await self._find(BleakScanner)
+                if device is None:
+                    self.status = "未找到 %s*，%.1f 秒后重试" % (self.name_prefix, backoff)
+                    await asyncio.sleep(backoff)
+                    backoff = min(MAX_BACKOFF_S, backoff * 2)
+                    continue
+                name = device.name
+                self.status = "正在连接 %s" % name
+                try:
+                    client = BleakClient(device)
+                    await client.connect()
+                except Exception as exc:
+                    self.status = "连接失败：%s" % exc
+                    client = None
+
             try:
-                async with BleakClient(device) as client:
+                if client is not None and client.is_connected:
+                    self._addr = client.address
+                    self._name = name
                     self._client = client
                     self.connected = True
-                    self.status = "已连接 %s" % device.name
+                    self.status = "已连接 %s" % name
                     with self._lock:
-                        self._stats["addr"] = device.name
+                        self._stats["addr"] = name
                     await client.start_notify(TX_UUID, self._on_notify)
                     backoff = 1.0
                     while client.is_connected and not self._stop.is_set():
@@ -101,8 +128,23 @@ class BleReceiver(threading.Thread):
                 self.connected = False
                 self._client = None
                 self._expect_seq = None
+                # 断链后把设备名和速率清零：留着上一次的值，界面会一直显示
+                # 「设备 MicDesktop-XXXX / 50 包每秒」，看起来像还连着。
+                with self._lock:
+                    self._stats["addr"] = "-"
+                    self._stats["pkt_rate"] = 0.0
+                    self._stats["samples_rate"] = 0.0
+                    self._win_start = None
+                    self._win_pkts = 0
+                    self._win_samples = 0
+                if client is not None:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
             if not self._stop.is_set():
-                await asyncio.sleep(backoff)
+                # 知道地址时不用长退避：直连本身几秒内就能重试一次
+                await asyncio.sleep(min(backoff, QUICK_RETRY_S) if self._addr else backoff)
                 backoff = min(MAX_BACKOFF_S, backoff * 2)
 
     async def _find(self, BleakScanner):
