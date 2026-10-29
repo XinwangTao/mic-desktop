@@ -348,7 +348,12 @@ class MainWindow(QWidget):
 
     def _on_stats(self, s):
         addr = s.get("addr", "-")
-        self.chip_dev.setText("设备 " + addr if addr != "-" else "设备 未连接")
+        # 蓝牙名固定是 MicDesktop-XXXX，前缀没有信息量；这一行本来就挤，
+        # 直接显示全名会被挤到掉字（实测 "MicDesktop-0EB6" 显示成 "MicDesktop-0EE"）。
+        prefix = self.cfg.get("ble_name_prefix", "MicDesktop-")
+        short = addr[len(prefix):] if addr.startswith(prefix) else addr
+        self.chip_dev.setText("设备 " + short if addr != "-" else "设备 未连接")
+        self.chip_dev.setToolTip(addr if addr != "-" else "还没收到板子的音频包")
         self.chip_dev.setObjectName("chipHi" if addr != "-" else "chip")
         self.chip_dev.style().unpolish(self.chip_dev)
         self.chip_dev.style().polish(self.chip_dev)
