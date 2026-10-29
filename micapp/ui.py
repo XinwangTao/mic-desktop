@@ -399,11 +399,18 @@ class MainWindow(QWidget):
         关掉降噪后上行变成 AEC 输出直通，底噪读数会上跳，语音却更完整。
         """
         ip = self._board_ip()
-        if not ip:
-            self.lbl_status.setText("板子不在线，无法切换降噪")
-            return
         want = not self._ns_on
-        if not self.speaker.control(ip, "NS:on" if want else "NS:off"):
+        cmd = "NS:on" if want else "NS:off"
+        if ip:
+            ok = self.speaker.control(ip, cmd)
+        else:
+            # 蓝牙模式没有 IP，控制帧改走 RX 特征；板子认同一条 "NS:on|off"
+            ble = getattr(self.speaker, "ble", None)
+            ok = bool(ble is not None and ble.send_control(cmd))
+            if not ok:
+                self.lbl_status.setText("板子不在线，无法切换降噪")
+                return
+        if not ok:
             self.lbl_status.setText("降噪切换发送失败（板子 IP 不可达）")
             return
         self._ns_on = want
@@ -412,8 +419,25 @@ class MainWindow(QWidget):
         self._verify_ns_async(ip)
 
     def _verify_ns_async(self, ip):
-        """后台问一句 STAT，确认板子真的认了这条控制帧——老固件会静默忽略。"""
+        """后台确认板子真的认了这条控制帧——老固件会静默忽略。"""
         def run():
+            if not ip:
+                # 蓝牙模式：板子回 "NS on" / "NS off"，等它自己报，不去问 STAT
+                ble = getattr(self.speaker, "ble", None)
+                if ble is None:
+                    return
+                was = ble.last_ns
+                deadline = time.monotonic() + 1.5
+                while time.monotonic() < deadline and ble.last_ns == was:
+                    time.sleep(0.05)
+                if ble.last_ns and ble.last_ns != was:
+                    on = ble.last_ns.endswith("on")
+                    self.sig_ns.emit(on)
+                    self.sig_status.emit("板子确认：降噪 " + ("开" if on else "关"))
+                else:
+                    self.sig_status.emit("降噪切换未见回包（可能是老固件）")
+                return
+
             from micapp.gate import _stat_once
             got = _stat_once((ip, self.speaker.port), 1.0)
             if got is None:
@@ -450,8 +474,8 @@ class MainWindow(QWidget):
         if not text:
             return
         ip = self._board_ip()
-        if not ip:
-            self.lbl_status.setText("还没收到板子的上行包，先在 config.json 填 board_ip")
+        if not ip and not getattr(getattr(self.speaker, "ble", None), "connected", False):
+            self.lbl_status.setText("板子不在线：等蓝牙连上，或在 config.json 填 board_ip")
             return
         if not self.speaker.speak(text, ip,
                                   on_status=self.sig_status.emit,

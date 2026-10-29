@@ -17,12 +17,12 @@ VSVersionInfo(
           [
             StringStruct('CompanyName', 'MicDesktop'),
             StringStruct('FileDescription', 'ESP32-S3 无线麦克风接收台'),
-            StringStruct('FileVersion', '1.1.0'),
+            StringStruct('FileVersion', '1.2.0'),
             StringStruct('InternalName', 'MicDesktop'),
             StringStruct('LegalCopyright', ''),
             StringStruct('OriginalFilename', 'MicDesktop.exe'),
             StringStruct('ProductName', 'MicDesktop'),
-            StringStruct('ProductVersion', '1.1.0')
+            StringStruct('ProductVersion', '1.2.0')
           ]
         )
       ]

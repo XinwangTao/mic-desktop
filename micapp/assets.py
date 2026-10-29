@@ -4,7 +4,7 @@ import sys
 
 APP_NAME = "MicDesktop"
 APP_TITLE = "无线麦克风接收台"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 
 def asset_path(name: str) -> str:

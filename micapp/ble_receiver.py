@@ -42,6 +42,7 @@ class BleReceiver(threading.Thread):
         self.connected = False
         self.status = "未连接"
         self.last_stat = ""
+        self.last_ns = ""
         self._pong = {}          # token -> (发出时刻, threading.Event)
         self._pong_lock = threading.Lock()
 
@@ -129,6 +130,8 @@ class BleReceiver(threading.Thread):
                         entry[1].set()
             elif text.startswith("STAT"):
                 self.last_stat = text
+            elif text.startswith("NS "):
+                self.last_ns = text
             return
 
         decoded = adpcm.decode(raw)
@@ -153,6 +156,19 @@ class BleReceiver(threading.Thread):
         self._update_rate()
 
     # ---------- 下行 ----------
+    def send_control(self, text: str) -> bool:
+        """发一条下行控制帧（STAT / TONE / NS:on|off），与 UDP 侧同名同义。"""
+        client, loop = self._client, self._loop
+        if client is None or loop is None or not self.connected:
+            return False
+        try:
+            asyncio.run_coroutine_threadsafe(
+                client.write_gatt_char(RX_UUID, text.encode("utf-8"), response=False),
+                loop).result(timeout=1.0)
+            return True
+        except Exception:
+            return False
+
     def send_pcm(self, pcm: bytes, stop_event=None) -> float:
         """把 16k mono PCM 按 20 ms 一帧编成 ADPCM 写进 RX 特征，实时节流。
 

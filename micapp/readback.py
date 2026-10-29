@@ -75,7 +75,9 @@ class Readback:
         if self.paused:
             return "paused"
         ip = self.ip_getter()
-        if not ip:
+        # 蓝牙模式板子没有 IP，回读走 BLE 的 RX 特征；两条通道都不可用才跳过，
+        # 否则蓝牙模式会永远报「板子不在线」、一句都不念。
+        if not ip and not getattr(getattr(self.speaker, "ble", None), "connected", False):
             self.skipped += 1
             self.on_status("未回读：板子不在线")
             return "no_ip"
