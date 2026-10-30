@@ -6,6 +6,7 @@
 import ctypes
 import ctypes.wintypes as wt
 import logging
+import threading
 import time
 
 INPUT_KEYBOARD = 1
@@ -62,15 +63,20 @@ def _events(unit: int, up: bool):
 
 
 def type_text(text: str, gap_s: float = 0.004):
-    """把 text 逐字打进前台窗口，返回 (成功?, 原因)。
+    """把 text 打进前台窗口，返回 (成功?, 原因)。
 
-    一次 SendInput 只送一个字的「按下+抬起」。实测（typing_probe.py）：
-    把 16 个字的 32 个事件放进同一次调用，目标窗口每个字都变成了这一批的第一个字
-    （"你好，语音输入…" 读回来是 "你你你你…"）；逐字调用则完全正确。
-    所以别为了「快」再合并批，代价是每次多一次系统调用（微秒级）。
+    首选「剪贴板 + Ctrl+V」：一次原子粘贴，不经过输入法。逐字 SendInput 的
+    Unicode 合成键会被第三方输入法拦截改写——2026-10-30 实测豆包输入法把
+    「你好，语音输入测试」改成「你好，，音输入测试」（标点翻倍、紧跟标点的
+    字丢失），微软拼音则完全正常。粘贴对两条路都稳。
+    兜底：剪贴板不可用时退回逐字 SendInput（每次只送一个字的按下+抬起；
+    一次塞多个事件目标窗口只认每批首字，见 typing_probe.py）。
+    副作用：剪贴板会被短暂占用，粘贴完成后 0.4 秒内恢复原内容。
     """
     if not text:
         return False, "文字为空"
+    if _paste_via_clipboard(text):
+        return True, ""
     user32 = _user32
     for unit in _units(text):
         pair = (_INPUT * 2)(_events(unit, False), _events(unit, True))
@@ -150,6 +156,50 @@ def is_risky_window(cls: str, title: str = "") -> bool:
     （群聊、文档）都被当成终端拦掉，实测踩过。
     """
     return cls in RISKY_CLASSES
+
+
+def _paste_via_clipboard(text: str) -> bool:
+    """Ctrl+V 粘贴。成功返回 True；依赖缺失或剪贴板被占返回 False 走兜底。"""
+    try:
+        import win32clipboard
+        import win32con
+    except Exception:
+        return False
+    prev = None
+    try:
+        win32clipboard.OpenClipboard()
+        if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+            prev = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
+        win32clipboard.CloseClipboard()
+    except Exception:
+        logging.exception("写剪贴板失败，退回逐字注入")
+        return False
+
+    def key(vk, flags):
+        ev = _INPUT(type=INPUT_KEYBOARD)
+        ev.ki = _KEYBDINPUT(wVk=vk, wScan=0, dwFlags=flags, time=0, dwExtraInfo=0)
+        return _user32.SendInput(1, ctypes.byref(ev), ctypes.sizeof(_INPUT)) == 1
+
+    VK_CTRL, VK_V = 0x11, 0x56
+    for vk, flags in ((VK_CTRL, 0), (VK_V, 0), (VK_V, KEYEVENTF_KEYUP), (VK_CTRL, KEYEVENTF_KEYUP)):
+        if not key(vk, flags):
+            return False
+        time.sleep(0.01)
+
+    def restore():
+        time.sleep(0.4)      # 等目标应用把剪贴板读走（读发生在 Ctrl+V 当下）
+        try:
+            if prev is not None:
+                win32clipboard.OpenClipboard()
+                win32clipboard.EmptyClipboard()
+                win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, prev)
+                win32clipboard.CloseClipboard()
+        except Exception:
+            pass
+    threading.Thread(target=restore, daemon=True).start()
+    return True
 
 
 def press_key(vk: int):

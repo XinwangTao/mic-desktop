@@ -41,6 +41,7 @@ class BleReceiver(threading.Thread):
                        "speech_pkts": 0, "pkt_rate": 0.0, "samples_rate": 0.0}
         self._expect_seq = None
         self._addr = None        # 上次连上的设备地址，断线后按地址直连，省掉扫描
+        self._name = None        # 最近一次连上的广播名（向导/界面显示用）
         self._name = None
         self._win_start = None
         self._win_pkts = 0
@@ -160,6 +161,10 @@ class BleReceiver(threading.Thread):
             if d.name and d.name.startswith(self.name_prefix):
                 return d
         return None
+
+    @property
+    def device_name(self) -> str:
+        return self._name or ""
 
     def _on_notify(self, _sender, data: bytearray):
         raw = bytes(data)

@@ -51,8 +51,23 @@ def main() -> int:
     app.setStyleSheet(QSS)
     app.setFont(QFont("Microsoft YaHei UI", 9))
 
+    # 首启向导：新机器没配置时先引导配完两个前置条件（连板子 + 选引擎）。
+    # 必须在 QApplication 之后（QDialog 的硬要求）、引擎创建之前。
+    # 老机器（引擎凭据/服务地址已经在）静默迁移：补写 setup_done，绝不弹窗打扰。
+    from micapp.setup_wizard import looks_configured, run_wizard
+    if not cfg.get("setup_done"):
+        if looks_configured(cfg):
+            cfg["setup_done"] = True
+            config.save(cfg)
+            logging.info("setup: 老机器静默迁移 setup_done=true")
+        else:
+            logging.info("setup: 未配置，弹首启向导")
+            cfg = run_wizard(cfg)
+
     engine = stt_base.create(cfg["stt_engine"], cfg, on_result=None)
     window = MainWindow(cfg, receiver=None, engine=engine)
+    if not cfg.get("setup_done"):
+        window.ui("setup_banner")
     # 引擎自报状态（本地服务不可用、转写失败等）显示在状态行，
     # 别让用户只看到一句抛异常的英文。
     engine.status_cb = lambda s: window.ui("status", s)

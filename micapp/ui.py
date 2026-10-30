@@ -147,6 +147,7 @@ class MainWindow(QWidget):
     sig_voice = Signal(bool, bool)            # 语音输入：开启?, 已暂停?
     sig_hotkey = Signal()                     # 全局热键（在热键线程触发，转给 GUI 线程）
     sig_hotkey_toggle = Signal()              # Shift+F9：语音输入硬开关
+    sig_setup = Signal()                      # 未完成配置：亮出「完成初始配置」按钮
     sig_board = Signal(str)                   # 板子发来的事件帧（BOOT 键等）
 
     def __init__(self, cfg: dict, receiver=None, engine=None):
@@ -181,6 +182,7 @@ class MainWindow(QWidget):
         self.sig_voice.connect(self._on_voice_state)
         self.sig_hotkey.connect(self._on_hotkey_voice)
         self.sig_hotkey_toggle.connect(self._on_hotkey_toggle)
+        self.sig_setup.connect(self._on_setup_needed)
         self.sig_board.connect(self._on_board_event)
         # 句柄在 GUI 线程先取好：语音输入在转写线程里判「前台是不是自己」，
         # winId() 不是线程安全的，那边只读这个缓存值。
@@ -327,6 +329,13 @@ class MainWindow(QWidget):
         self.lbl_status.setObjectName("hint")
         lay.addWidget(self.lbl_status)
         lay.addStretch(1)
+        self.btn_setup = QPushButton("⚙ 完成初始配置", wrap)
+        self.btn_setup.setObjectName("ghostWarn")
+        self.btn_setup.setCursor(Qt.PointingHandCursor)
+        self.btn_setup.setToolTip("蓝牙连板子 + 选转写引擎，走完向导说话就能上屏")
+        self.btn_setup.clicked.connect(self._open_setup)
+        self.btn_setup.setVisible(False)
+        lay.addWidget(self.btn_setup)
         self.btn_vi = QPushButton("语音输入 关", wrap)
         self.btn_vi.setObjectName("ghost")
         self.btn_vi.setCursor(Qt.PointingHandCursor)
@@ -369,6 +378,8 @@ class MainWindow(QWidget):
             self.sig_hotkey.emit()
         elif kind == "hotkey_toggle":
             self.sig_hotkey_toggle.emit()
+        elif kind == "setup_banner":
+            self.sig_setup.emit()
         elif kind == "board_event":
             self.sig_board.emit(str(args[0]))
 
@@ -509,6 +520,20 @@ class MainWindow(QWidget):
         # F9：暂停/恢复（没开启时按一下直接开启，省得再点界面）
         if self.voice is not None:
             self.voice.toggle_pause()
+
+    def _on_setup_needed(self):
+        self.btn_setup.setVisible(True)
+
+    def _open_setup(self):
+        """重开首启向导：保存成功就提示重启，让引擎/接收线程按新配置起。"""
+        from micapp.setup_wizard import run_wizard
+        name = getattr(getattr(self, "receiver", None), "device_name", "")
+        cfg = run_wizard(self.cfg, board_connected_name=name)
+        if cfg.get("setup_done"):
+            self.btn_setup.setVisible(False)
+            self.ui("status", "配置已保存——重启应用后按新引擎运行")
+        else:
+            self.ui("status", "已跳过：引擎或板子还没配，功能可能不可用")
 
     def _on_board_event(self, event):
         """板载 BOOT 键：长按切开关（同界面按钮/Shift+F9），短按当回车。"""
