@@ -10,6 +10,7 @@ import time
 
 INPUT_KEYBOARD = 1
 VK_RETURN = 0x0D
+VK_BACK = 0x08
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 ERROR_ACCESS_DENIED = 5
@@ -168,3 +169,12 @@ def press_key(vk: int):
 
 def press_enter():
     return press_key(VK_RETURN)
+
+
+def press_backspace(count: int):
+    """连按 count 次退格，返回 (成功次数, 失败原因)。用「语音清除」撤回刚输入的字。"""
+    for i in range(max(0, int(count))):
+        ok, reason = press_key(VK_BACK)
+        if not ok:
+            return i, reason
+    return max(0, int(count)), ""

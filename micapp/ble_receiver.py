@@ -178,9 +178,13 @@ class BleReceiver(threading.Thread):
             elif text.startswith("NS "):
                 self.last_ns = text
             elif text == "VI":
-                # 板子上的 BOOT 键被按下：切一次语音输入的开关
+                # BOOT 键长按：切一次语音输入的开关
                 if self.on_control:
                     self.on_control("voice_toggle")
+            elif text == "EN":
+                # BOOT 键短按：当一次回车
+                if self.on_control:
+                    self.on_control("enter")
             return
 
         decoded = adpcm.decode(raw)

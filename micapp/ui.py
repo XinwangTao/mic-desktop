@@ -511,9 +511,13 @@ class MainWindow(QWidget):
             self.voice.toggle_pause()
 
     def _on_board_event(self, event):
-        """板载 BOOT 键：和界面按钮、Shift+F9 同一个动作。"""
+        """板载 BOOT 键：长按切开关（同界面按钮/Shift+F9），短按当回车。"""
         if event == "voice_toggle" and self.voice is not None:
             self.voice.toggle()
+        elif event == "enter":
+            from micapp import typer
+            ok, reason = typer.press_enter()
+            self.ui("status", "板载按键：已回车" if ok else "回车没有按下去：%s" % reason)
 
     def _on_hotkey_toggle(self):
         # Shift+F9：硬开关，和界面按钮同一个动作，状态照样落盘

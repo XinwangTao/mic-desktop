@@ -73,6 +73,8 @@ def main() -> int:
         is_self_foreground=window.is_self_foreground,
         is_risky_target=window.is_risky_target,
         allow_console=bool(cfg.get("voice_input_allow_console", False)),
+        enter_words=cfg.get("voice_input_enter_words", []),
+        clear_words=cfg.get("voice_input_clear_words", []),
         is_playing=lambda: window.speaker.busy,
         state_path=os.path.join(os.path.dirname(config.config_path()), "state.json"),
         min_seconds=float(cfg.get("voice_input_min_seconds", 0.6)),

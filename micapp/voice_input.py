@@ -15,9 +15,21 @@ from collections import deque
 from micapp import typer
 
 
-# 说这两个词时按下回车，而不是把这两个字打出来。只认整句，避免把句子里的
+# 说这些词时按下回车，而不是把字打出来。只认整句，避免把句子里的
 # 「回车键坏了」也变成一次回车。
-ENTER_WORDS = frozenset({"回车", "换行"})
+# 变体是实测来的：whisper 把「回车」听成「回出」两次（huí chū / huí chē 太近），
+# 多收几个近音词比事后教用户「再清楚点说」有用。
+ENTER_WORDS = frozenset({
+    "回车", "换行", "回车键", "换行键",
+    "回出", "回撤", "回扯", "回彻", "会车",
+})
+
+# 说这些词时把「本次语音输入打进当前窗口的字」全部退格删掉。
+# 只删语音打的字，不碰窗口里原有的内容；窗口换过就不删。
+CLEAR_WORDS = frozenset({"清除", "清空", "清除全部", "全部清除"})
+
+# 一次最多退格多少下：防止记账出错时把整个文档删光
+CLEAR_LIMIT = 4000
 
 
 def normalize(text: str) -> str:
@@ -28,7 +40,8 @@ class VoiceInput:
     def __init__(self, on_status, on_state, is_self_foreground, is_playing, state_path,
                  min_seconds: float = 0.6, min_chars: int = 2, brake_count: int = 3,
                  brake_window_s: float = 2.0, dedupe_window: int = 3, clock=time.monotonic,
-                 is_risky_target=None, allow_console: bool = False):
+                 is_risky_target=None, allow_console: bool = False, enter_words=None,
+                 clear_words=None):
         self.on_status = on_status or (lambda _s: None)
         self.on_state = on_state or (lambda _on, _paused: None)
         self.is_self_foreground = is_self_foreground or (lambda: False)
@@ -37,6 +50,12 @@ class VoiceInput:
         # allow_console=True 是用户显式开的例外，此时文字照打，但「回车」指令仍然禁用。
         self.is_risky_target = is_risky_target or (lambda: False)
         self.allow_console = bool(allow_console)
+        # 用户可以把「自己常被听成什么」写进 config，不用改代码
+        self.enter_words = set(ENTER_WORDS) | {normalize(w) for w in (enter_words or [])}
+        self.clear_words = set(CLEAR_WORDS) | {normalize(w) for w in (clear_words or [])}
+        # 清除只删「语音打进来的字」：记字数 + 记打进了哪个窗口
+        self._typed_chars = 0
+        self._typed_hwnd = 0
         self.state_path = state_path
         self.min_seconds = min_seconds
         self.min_chars = min_chars
@@ -72,6 +91,8 @@ class VoiceInput:
         self.enabled = bool(on)
         self.paused = False
         self._accepted_at.clear()
+        self._typed_chars = 0      # 重新开启就当新的一段，不清上一次的账
+        self._typed_hwnd = 0
         self._save()
         self.on_state(self.enabled, self.paused)
         if self.enabled:
@@ -105,7 +126,9 @@ class VoiceInput:
         if len(norm) < self.min_chars:
             self.skipped += 1
             return "too_few"
-        if norm in self._recent:
+        # 指令词不参与去重：同一句「回车」连说两次，是真的要按两次回车
+        is_cmd = norm in self.enter_words or norm in self.clear_words
+        if not is_cmd and norm in self._recent:
             self.skipped += 1
             return "dup"
         if self.is_playing():
@@ -135,10 +158,9 @@ class VoiceInput:
             self.on_status("当前窗口是终端，这句没有上屏（免得误识别变成命令）")
             return "risky"
 
-        if norm in ENTER_WORDS:
+        if norm in self.enter_words:
             # 放行终端时回车同样生效：用户明确要求「终端里也能用回车」。
             # 这也意味着终端里一句误识别的「回车」会直接执行那行命令。
-            self._recent.append(norm)
             ok, reason = typer.press_enter()
             if not ok:
                 self.on_status("回车没有按下去：%s" % reason)
@@ -146,6 +168,9 @@ class VoiceInput:
             self.typed += 1
             self.on_status("已按回车")
             return "enter"
+
+        if norm in self.clear_words:
+            return self._clear_typed()
 
         ok, reason = typer.type_text(text)
         self._recent.append(norm)
@@ -156,5 +181,24 @@ class VoiceInput:
             self.on_status("输入失败：%s" % reason)
             return "failed"
         self.typed += 1
+        self._typed_chars += len(text)
+        self._typed_hwnd = typer.foreground_handle()
         self.on_status("已输入：%s" % text[:24])
         return "typed"
+
+    def _clear_typed(self) -> str:
+        """说「清除」时调用：退格删掉本次语音打进当前窗口的字。"""
+        if self._typed_chars <= 0:
+            self.on_status("没有可清除的内容（这段还没打过字）")
+            return "nothing_to_clear"
+        if typer.foreground_handle() != self._typed_hwnd:
+            self.on_status("当前窗口不是刚才输入的那个，没敢清除")
+            return "clear_wrong_window"
+        want = min(self._typed_chars, CLEAR_LIMIT)
+        done, reason = typer.press_backspace(want)
+        self._typed_chars = 0
+        if done < want:
+            self.on_status("清除中断：%s（已退格 %d 字）" % (reason, done))
+            return "clear_failed"
+        self.on_status("已清除刚才输入的 %d 个字" % done)
+        return "cleared"

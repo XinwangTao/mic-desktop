@@ -93,6 +93,15 @@ def main():
     )
     vi_console.set_enabled(True)
 
+    # 自定义词表：用户在 config 里自己加的触发词
+    vi_custom = VoiceInput(
+        on_status=lambda s: None, on_state=lambda on, paused: None,
+        is_self_foreground=lambda: False, is_playing=lambda: False,
+        state_path=os.path.join(tmpdir, "state3.json"), clock=lambda: t[0],
+        enter_words=["发送"],
+    )
+    vi_custom.set_enabled(True)
+
     offer_log = []
     brake_base = [None]
 
@@ -135,6 +144,18 @@ def main():
         (None, lambda: check("说「回车」-> enter", vi.offer("回车", 2.0) == "enter")),
         (None, lambda: check("真的插了一个换行", text().endswith("\n"), repr(text()))),
         (None, lambda: check("句子里的「回车」不当命令", vi.offer("回车键不太好使", 2.0) == "typed")),
+        (None, lambda: check("近音「回出」也当回车", vi.offer("回出", 2.0) == "enter")),
+        (None, lambda: check("近音「回撤」也当回车", vi.offer("回撤", 2.0) == "enter")),
+        (None, lambda: check("config 自定义词表生效", vi_custom.offer("发送", 2.0) == "enter")),
+        (None, lambda: edit.clear()),
+        (None, lambda: check("清除前先打一句", vi.offer("这句话等会儿要被清除", 2.0) == "typed")),
+        (None, lambda: check("说「清除」-> cleared", vi.offer("清除", 2.0) == "cleared")),
+        (None, lambda: check("窗口真的空了", text() == "", repr(text()))),
+        (None, lambda: check("再清一次没东西可清", vi.offer("清除", 2.0) == "nothing_to_clear")),
+        (None, lambda: edit.clear()),
+        (None, lambda: check("连说两次「回车」各按一次",
+                             vi.offer("回车", 2.0) == "enter" and vi.offer("回车", 2.0) == "enter")),
+        (None, lambda: check("确实多了两个换行", text() == chr(10) * 2, repr(text()))),
         (None, lambda: vi.set_enabled(True)),            # 清空计数，重造刹车条件
         (None, lambda: brake_offer("第零次不同的话")),
         (None, lambda: brake_offer("第一次不同的话")),
