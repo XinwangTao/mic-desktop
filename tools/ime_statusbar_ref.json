@@ -1,0 +1,13 @@
+{
+  "offset": [
+    72,
+    11
+  ],
+  "size": [
+    42,
+    18
+  ],
+  "zh": "ime_ref_zh.bin",
+  "en": "ime_ref_en.bin",
+  "note": "豆包输入法状态条里「中/英」那一格的参考图（BGRA，状态条窗口内相对坐标）。换主题/改DPI/挪动状态条后需重新标定（F:\\cache\\sb_calibrate.py）。"
+}

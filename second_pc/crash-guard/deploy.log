@@ -1,0 +1,21 @@
+2026-11-02 10:33:59 restored RelayDesk serve after guard dry-run killed it
+2026-11-02 11:03:23 == deploy start ==
+2026-11-02 11:03:34 push guard.ps1 (6405B) -> 6405
+2026-11-02 11:03:40 push guard.json (990B) -> 990
+2026-11-02 11:03:46 push install_guard.ps1 (2228B) -> 2228
+2026-11-02 11:03:52 push diagnose.ps1 (3883B) -> 3883
+2026-11-02 11:03:52 == install ==
+处理 -File“'C:\Users\Administrator\PCCrashGuard-src\install_guard.ps1'”失败: 不支持给定路径的格式。 请为 -File 参数指定一个有效路径。
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+2026-11-02 11:03:58 == verify ==
+2026-11-02 11:04:10 == deploy end ==
+2026-11-02 11:12 diagnosis summary:
+- 14d: 17x Event 41, 18x Event 6008, 0 minidumps, 0 WHEA, 0 bugchecks (Event41 BugcheckCode=0)
+- hw: i9-14900K, ASUS ROG STRIX Z790-A GAMING WIFI S, BIOS 1801 (2024-11-30), microcode 0x12B
+- RAM 2x32G Micron DDR5-5600 JEDEC (no XMP), mem use ~26%, GPU RTX5080 52C idle
+- last-24h crashes: 7 (last 10:48); before-hang logs: no errors -> instant hard hang
+- deployed guard + CrashOnCtrlScroll=1; CPU PROCTHROTTLEMAX=80 (mitigation)
+- revert CPU cap: powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX 100; powercfg /setactive SCHEME_CURRENT
+2026-11-02 12:42:23 ccswitch LAN share THEWANG->K087HI9: 3 routes verified (openai/cn222k3/claude2, deepseek default)

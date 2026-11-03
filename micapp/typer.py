@@ -19,6 +19,47 @@ ERROR_ACCESS_DENIED = 5
 # use_last_error=True 才能用 ctypes.get_last_error() 读到真正的 GetLastError；
 # 用默认的 ctypes.windll.user32 拿到的是过期的错误码。
 _user32 = ctypes.WinDLL("user32", use_last_error=True)
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+class _LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wt.UINT), ("dwTime", wt.DWORD)]
+
+
+# 本程序最后一次注入（SendInput）发生的 GetTickCount 毫秒。GetLastInputInfo 会把
+# 我们自己的注入也算成「输入」，所以要记下来、在 user_is_typing 里排除掉，否则
+# 刚注入完再判断就会误以为自己刚被打字、把正常的语音输入拦掉。
+_last_inject_tick = 0
+
+
+def _mark_inject():
+    global _last_inject_tick
+    try:
+        _last_inject_tick = int(_kernel32.GetTickCount())
+    except Exception:
+        _last_inject_tick = 0
+
+
+def user_is_typing(idle_ms: int = 300) -> bool:
+    """系统最近 idle_ms 毫秒内有没有「用户亲手」的键盘/鼠标输入。
+
+    用来避免语音输入在用户正手动打字时用 Ctrl+V 去粘贴、顶掉输入法正在组词的内容
+    ——这就是「语音输入一开、终端里就打不了中文」的根源。本程序自己 SendInput
+    注入不算（用 _last_inject_tick 排除）。
+    """
+    info = _LASTINPUTINFO()
+    info.cbSize = ctypes.sizeof(_LASTINPUTINFO)
+    if not _user32.GetLastInputInfo(ctypes.byref(info)):
+        return False
+    last = int(info.dwTime)
+    if not last:
+        return False
+    now = int(_kernel32.GetTickCount())
+    # 最近一次输入若紧挨着本程序自己的注入，八成就是我们注入的，不算用户在打字
+    if _last_inject_tick and ((last - _last_inject_tick) & 0xFFFFFFFF) < 100:
+        return False
+    elapsed = (now - last) & 0xFFFFFFFF
+    return elapsed < idle_ms
 
 
 class _KEYBDINPUT(ctypes.Structure):
@@ -76,6 +117,7 @@ def type_text(text: str, gap_s: float = 0.004):
     if not text:
         return False, "文字为空"
     if _paste_via_clipboard(text):
+        _mark_inject()
         return True, ""
     user32 = _user32
     for unit in _units(text):
@@ -88,6 +130,7 @@ def type_text(text: str, gap_s: float = 0.004):
                 return False, "目标程序权限更高（UAC 隔离）"
             return False, "目标窗口没有接收键盘输入"
         time.sleep(gap_s)
+    _mark_inject()
     return True, ""
 
 
@@ -172,21 +215,33 @@ def _paste_via_clipboard(text: str) -> bool:
             prev = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
         win32clipboard.EmptyClipboard()
         win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
-        win32clipboard.CloseClipboard()
     except Exception:
         logging.exception("写剪贴板失败，退回逐字注入")
         return False
+    finally:
+        # 无论成败都关掉剪贴板：一旦 Empty/Set 抛异常又没关，剪贴板会被锁死，
+        # 之后所有粘贴（包括别的应用）都失败，比「逐字注入」难排查得多。
+        try:
+            win32clipboard.CloseClipboard()
+        except Exception:
+            pass
 
     def key(vk, flags):
         ev = _INPUT(type=INPUT_KEYBOARD)
         ev.ki = _KEYBDINPUT(wVk=vk, wScan=0, dwFlags=flags, time=0, dwExtraInfo=0)
-        return _user32.SendInput(1, ctypes.byref(ev), ctypes.sizeof(_INPUT)) == 1
+        return ev
 
     VK_CTRL, VK_V = 0x11, 0x56
-    for vk, flags in ((VK_CTRL, 0), (VK_V, 0), (VK_V, KEYEVENTF_KEYUP), (VK_CTRL, KEYEVENTF_KEYUP)):
-        if not key(vk, flags):
-            return False
-        time.sleep(0.01)
+    # 四个事件一次 SendInput 下发：SendInput 是「全进或全不进」，不会出现
+    # Ctrl 按下去了、V 没进去这种半截状态。分开调用时任何一步失败或线程被
+    # 打断，都可能把 Ctrl 卡在按下状态——那之后每个键都成了 Ctrl+键，中文输入法
+    # 组不了字，换输入法也救不回来（2026-10-30 踩过）。
+    seq = (key(VK_CTRL, 0), key(VK_V, 0), key(VK_V, KEYEVENTF_KEYUP), key(VK_CTRL, KEYEVENTF_KEYUP))
+    arr = (_INPUT * 4)(*seq)
+    if _user32.SendInput(4, ctypes.byref(arr), ctypes.sizeof(_INPUT)) != 4:
+        logging.warning("粘贴热键没有完整下发，err=%d", ctypes.get_last_error())
+        release_modifiers()
+        return False
 
     def restore():
         time.sleep(0.4)      # 等目标应用把剪贴板读走（读发生在 Ctrl+V 当下）
@@ -202,6 +257,28 @@ def _paste_via_clipboard(text: str) -> bool:
     return True
 
 
+def release_modifiers() -> bool:
+    """把所有修饰键各抬一次（L/R 各一份），返回是否完整下发。
+
+    用途：万一注入中途出岔子、或者用户切走时还有键卡在按下状态，用它兜底。
+    抬一个本来就没按下的键是无害的；真按着的时候抬一下，用户下一次按键会重新
+    按下，不会丢输入。左右各发一份是因为 SendInput 用的是虚拟键，抬 VK_CONTROL
+    未必能清掉 AltGr（右 Alt）那种扫描码层面的状态。
+    """
+    mods = (0xA2, 0xA3, 0xA0, 0xA1, 0xA4, 0xA5, 0x5B, 0x5C)   # L/R Ctrl Shift Alt Win
+    seq = []
+    for vk in mods:
+        ev = _INPUT(type=INPUT_KEYBOARD)
+        ev.ki = _KEYBDINPUT(wVk=vk, wScan=0, dwFlags=KEYEVENTF_KEYUP, time=0, dwExtraInfo=0)
+        seq.append(ev)
+    arr = (_INPUT * len(seq))(*seq)
+    sent = _user32.SendInput(len(seq), ctypes.byref(arr), ctypes.sizeof(_INPUT))
+    if sent != len(seq):
+        logging.warning("抬起修饰键只送进 %d/%d，err=%d", sent, len(seq), ctypes.get_last_error())
+        return False
+    return True
+
+
 def press_key(vk: int):
     """按一下普通按键（不带 Unicode 标志），返回 (成功?, 原因)。"""
     for flags in (0, KEYEVENTF_KEYUP):
@@ -214,6 +291,7 @@ def press_key(vk: int):
                 return False, "目标程序权限更高（UAC 隔离）"
             return False, "目标窗口没有接收键盘输入"
         time.sleep(0.004)
+    _mark_inject()
     return True, ""
 
 

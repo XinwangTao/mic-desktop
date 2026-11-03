@@ -146,7 +146,7 @@ class MainWindow(QWidget):
     sig_ns = Signal(bool)                     # 板子自报的降噪状态
     sig_voice = Signal(bool, bool)            # 语音输入：开启?, 已暂停?
     sig_hotkey = Signal()                     # 全局热键（在热键线程触发，转给 GUI 线程）
-    sig_hotkey_toggle = Signal()              # Shift+F9：语音输入硬开关
+    sig_hotkey_toggle = Signal()              # Ctrl+Alt+F9：语音输入硬开关
     sig_setup = Signal()                      # 未完成配置：亮出「完成初始配置」按钮
     sig_board = Signal(str)                   # 板子发来的事件帧（BOOT 键等）
 
@@ -536,7 +536,7 @@ class MainWindow(QWidget):
             self.ui("status", "已跳过：引擎或板子还没配，功能可能不可用")
 
     def _on_board_event(self, event):
-        """板载 BOOT 键：长按切开关（同界面按钮/Shift+F9），短按当回车。"""
+        """板载 BOOT 键：长按切开关（同界面按钮/Ctrl+Alt+F9），短按当回车。"""
         if event == "voice_toggle" and self.voice is not None:
             self.voice.toggle()
         elif event == "enter":

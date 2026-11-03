@@ -49,7 +49,9 @@ class VoiceInput:
         # 前台是终端/控制台时默认不注入：一句话识别错就可能变成半条命令。
         # allow_console=True 是用户显式开的例外，此时文字照打，但「回车」指令仍然禁用。
         self.is_risky_target = is_risky_target or (lambda: False)
-        self.allow_console = bool(allow_console)
+        # 终端注入：config 里的 allow_console 是默认值，运行期可热键切换，切换结果落 state.json
+        self._console_default = bool(allow_console)
+        self.allow_console = self._console_default
         # 用户可以把「自己常被听成什么」写进 config，不用改代码
         self.enter_words = set(ENTER_WORDS) | {normalize(w) for w in (enter_words or [])}
         self.clear_words = set(CLEAR_WORDS) | {normalize(w) for w in (clear_words or [])}
@@ -74,15 +76,19 @@ class VoiceInput:
     def _load(self):
         try:
             with open(self.state_path, encoding="utf-8") as f:
-                self.enabled = bool(json.load(f).get("voice_input", False))
+                data = json.load(f)
+                self.enabled = bool(data.get("voice_input", False))
+                self.allow_console = bool(data.get("allow_console", self._console_default))
         except (OSError, ValueError):
             self.enabled = False
+            self.allow_console = self._console_default
 
     def _save(self):
         try:
             tmp = self.state_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"voice_input": self.enabled}, f)
+                json.dump({"voice_input": self.enabled,
+                           "allow_console": self.allow_console}, f)
             os.replace(tmp, self.state_path)
         except OSError:
             logging.exception("保存语音输入状态失败")
@@ -112,6 +118,12 @@ class VoiceInput:
         self.on_state(self.enabled, self.paused)
         self.on_status("语音输入已暂停，按 F9 恢复" if self.paused else "语音输入已恢复")
 
+    def toggle_console(self):
+        """热键切换终端注入：开 = 终端里也打字，关 = 终端里不注入（普通窗口不受影响）。"""
+        self.allow_console = not self.allow_console
+        self._save()
+        self.on_status("终端注入已开启" if self.allow_console else "终端注入已关闭")
+
     # ---------- 主入口 ----------
     def offer(self, text: str, duration_s: float) -> str:
         """一句话转写完成时调用；返回这次的动作，便于日志与测试。"""
@@ -131,6 +143,12 @@ class VoiceInput:
         if not is_cmd and norm in self._recent:
             self.skipped += 1
             return "dup"
+        # 用户正在手动打字/操作时，别用 Ctrl+V 打断他（语音一开就打不了中文的根源：
+        # 注入的粘贴顶掉了输入法正在组词的内容）。停手后再说，就正常上屏。
+        if typer.user_is_typing():
+            self.skipped += 1
+            self.on_status("正在手动打字，这句先不上屏")
+            return "typing"
         if self.is_playing():
             # 板子正在念回读：这时候上屏等于把播报打进别人的输入框
             self.skipped += 1

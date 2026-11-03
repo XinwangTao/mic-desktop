@@ -43,6 +43,13 @@ DEFAULTS = {
     # 自动回读：转写出一句就自动念出来。默认关——会把误转写也念出来，需要时在 config.json 打开
     "auto_speak": False,
     "auto_speak_min_chars": 2,
+    # 跨机语音输入：中枢侧把转写好的文字转发给第二台接收端
+    "remote": {
+        "host": "",           # 第二台接收端 IP（中枢侧填；空 = 未配置，转发自动回退本机）
+        "port": 8391,         # 中枢目标端口 / 接收端监听端口
+        "timeout": 2.0,       # 中枢转发超时（秒）
+        "listen": "0.0.0.0",  # 接收端监听地址
+    },
 }
 
 ENGINE_LABELS = {"xfyun": "讯飞云端", "whisper_http": "Whisper 本地"}

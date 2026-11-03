@@ -1,5 +1,16 @@
 websocket-client
 PySide6==6.9.1
 pywin32
+# BLE 接收（build.ps1 的 --collect-all bleak / --collect-submodules winrt 依赖它们）
+bleak>=3.0,<4
+winrt-runtime
+winrt-Windows.Devices.Bluetooth
+winrt-Windows.Devices.Bluetooth.Advertisement
+winrt-Windows.Devices.Bluetooth.GenericAttributeProfile
+winrt-Windows.Devices.Enumeration
+winrt-Windows.Devices.Radios
+winrt-Windows.Foundation
+winrt-Windows.Foundation.Collections
+winrt-Windows.Storage.Streams
 # 构建依赖（仅打包时需要）
 pyinstaller

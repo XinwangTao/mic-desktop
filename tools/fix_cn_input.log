@@ -1,0 +1,6 @@
+2026-10-31 13:58:35 target pid=49424 cls=GuardTest title='guard test' rid=0x2000
+2026-10-31 13:58:39 result: 没有改动：按你的回答，输入法状态正常。 |  | 窗口：guard test
+2026-10-31 14:05:23 target pid=59912 cls=GuardE2E title='guard e2e' rid=0x2000
+2026-10-31 14:05:24 result: 已按一次 Ctrl+空格（输入法被关闭时只有它能打开，Shift 不行）： | · 现在能打拼音了 → 完事 | · 还是只出字母 → 再按一次 Ctrl+空格 | · 候选出来是英文 → 按一下 Shift |  | 窗口：guard e2e
+2026-10-31 14:06:17 target pid=75448 cls=GuardE2E title='guard e2e' rid=0x2000
+2026-10-31 14:06:19 result: 已按一次 Ctrl+空格（输入法被关闭时只有它能打开，Shift 不行）： | · 现在能打拼音了 → 完事 | · 还是只出字母 → 再按一次 Ctrl+空格 | · 候选出来是英文 → 按一下 Shift |  | 窗口：guard e2e

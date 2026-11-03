@@ -10,13 +10,13 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication
 
-from micapp import config
+from micapp import config, typer
 from micapp.assets import APP_NAME, asset_path
 from micapp.stt import base as stt_base
 from micapp.stt import xfyun  # noqa: F401 注册引擎
 from micapp.stt import whisper_http  # noqa: F401 注册引擎
 from micapp.gate import build_gate
-from micapp.hotkey import MOD_SHIFT, VK_F9, GlobalHotkey
+from micapp.hotkey import MOD_CTRL_ALT, VK_F8, VK_F9, GlobalHotkey
 from micapp.readback import Readback
 from micapp.ui import QSS, MainWindow
 from micapp.udp_receiver import UdpReceiver
@@ -105,6 +105,18 @@ def main() -> int:
         min_chars=int(cfg.get("auto_speak_min_chars", 2)),
         on_status=lambda s: window.ui("status", s),
     )
+    # 跨机语音输入：目标切换（本机 / 第二台）。状态独立存 target.json，
+    # 不塞进 voice_input 的 state.json（那边只写 voice_input 键，会被覆盖）。
+    from micapp.remote_target import RemoteTarget
+    remote_cfg = cfg.get("remote", {})
+    target = RemoteTarget(
+        os.path.join(os.path.dirname(config.config_path()), "target.json"),
+        host=remote_cfg.get("host", ""),
+        port=remote_cfg.get("port", 8391),
+        timeout=remote_cfg.get("timeout", 2.0),
+        on_status=lambda s: window.ui("status", s),
+    )
+    window.ui("status", "语音输入目标：%s" % ("第二台" if target.is_remote else "本机"))
     # 上次退出时是开着的，重启要接着开着：按钮外观和回读互斥都得立刻对上
     if voice.enabled:
         on_voice_state(True, voice.paused)
@@ -119,10 +131,22 @@ def main() -> int:
                 f.write(time.strftime("[%H:%M:%S] ") + text + "\n")
         except OSError:
             logging.exception("transcript save failed")
-        # 语音输入：把这句话打进前台窗口；太长/太短/重复/回读期间的判断都在 VoiceInput 里
+        # 语音输入：本机 / 第二台二选一。第二台不可达时回本机，不丢字。
         dur = durations.popleft() if durations else 99.0
-        vi_action = voice.offer(text, dur)
-        if vi_action not in ("typed", "off", "own_window"):
+        if target.is_remote:
+            if not voice.enabled:
+                vi_action = "off"
+            elif voice.paused:
+                vi_action = "paused"
+            elif target.forward(text, dur):
+                vi_action = "sent"
+                window.ui("status", "已发到第二台：%s" % text[:24])
+            else:
+                vi_action = voice.offer(text, dur)
+                window.ui("status", "第二台不可达，已回本机")
+        else:
+            vi_action = voice.offer(text, dur)
+        if vi_action not in ("typed", "off", "own_window", "sent"):
             logging.info("voice input skip (%s): %s", vi_action, text)
         action = "off" if voice.enabled else readback.offer(text)
         if action not in ("spoken", "queued", "off"):
@@ -221,18 +245,32 @@ def main() -> int:
     receiver.start()
     window.show()
 
-    # 全局热键：F9 暂停/恢复，Shift+F9 硬开关。注册失败（被占用了）只警告，不影响主流程。
+    # 全局热键：F9 暂停/恢复，Ctrl+Alt+F9 硬开关，F8 切换语音输入目标（本机↔第二台），
+    # Ctrl+Alt+F8 切换终端注入。注册失败（被占用了）只警告，不影响主流程。
+    # 带修饰键的一律用 Ctrl+Alt 而不是 Shift：RegisterHotKey 吞掉功能键后，输入法
+    # 只看到一次裸 Shift，会被当成中英文切换（见 micapp/hotkey.py 里的说明）。
     hotkey = GlobalHotkey(VK_F9, lambda: window.ui("hotkey_voice"), hk_id=1)
     hotkey_toggle = GlobalHotkey(VK_F9, lambda: window.ui("hotkey_toggle"),
-                                 name="hotkey-toggle", mods=MOD_SHIFT, hk_id=2)
+                                 name="hotkey-toggle", mods=MOD_CTRL_ALT, hk_id=2)
+    hotkey_target = GlobalHotkey(VK_F8, lambda: target.toggle(),
+                                 name="hotkey-target", hk_id=3)
+    hotkey_console = GlobalHotkey(VK_F8, lambda: voice.toggle_console(),
+                                  name="hotkey-console", mods=MOD_CTRL_ALT, hk_id=4)
     hotkey.start()
     hotkey_toggle.start()
+    hotkey_target.start()
+    hotkey_console.start()
 
     try:
         return app.exec()
     finally:
         hotkey.stop()
         hotkey_toggle.stop()
+        hotkey_target.stop()
+        hotkey_console.stop()
+        # 退出前把修饰键各抬一次：别让 Ctrl/Shift 卡在按下状态带出去
+        # （卡住会让所有窗口的中文输入都组不了字）
+        typer.release_modifiers()
         receiver.stop()
         engine.stop()
 

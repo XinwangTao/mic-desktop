@@ -1,0 +1,63 @@
+{
+  "memPressurePct": 90,
+  "pressureKillMB": 800,
+  "heartbeatSec": 60,
+  "whitelist": [
+    "System",
+    "Idle",
+    "Registry",
+    "smss",
+    "csrss",
+    "wininit",
+    "winlogon",
+    "services",
+    "lsass",
+    "svchost",
+    "explorer",
+    "dwm",
+    "audiodg",
+    "fontdrvhost",
+    "MsMpEng",
+    "NisSrv",
+    "Taskmgr",
+    "powershell",
+    "pwsh",
+    "conhost",
+    "cmd",
+    "ollama",
+    "ollama_llama_server",
+    "ollama.exe"
+  ],
+  "rules": [
+    {
+      "name": "RelayDesk",
+      "maxRssMB": 1500,
+      "maxInstances": 12
+    },
+    {
+      "name": "MicDesktop",
+      "maxRssMB": 1500,
+      "maxInstances": 6
+    },
+    {
+      "name": "flix",
+      "maxRssMB": 800,
+      "maxInstances": 4
+    },
+    {
+      "name": "node",
+      "maxRssMB": 6000,
+      "maxInstances": 12
+    },
+    {
+      "name": "python",
+      "maxRssMB": 6000,
+      "maxInstances": 10
+    },
+    {
+      "name": "pythonw",
+      "maxRssMB": 6000,
+      "maxInstances": 10
+    }
+  ]
+}

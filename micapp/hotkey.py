@@ -15,6 +15,15 @@ MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
 MOD_NOREPEAT = 0x4000
 
+# 新热键一律用 Ctrl+Alt，不要用 Shift。
+# 原因（2026-10-31 实测）：中文输入法普遍把「单独按一下 Shift」当作中英文切换
+# （豆包输入法 languageSwitchKey=shift）。RegisterHotKey 会把功能键从输入队列里
+# 吞掉，于是输入法只看到 Shift 的按下+抬起 = 一次裸 Shift → 切到英文档，
+# 表现就是「打拼音直接出英文字母」，而且这个状态是按窗口/线程记的，软件关掉
+# 也不会自动恢复。实测：不注册热键时发 Shift+F9 保持中文；注册后同样发一遍就变英文。
+MOD_CTRL_ALT = MOD_CONTROL | MOD_ALT
+
+VK_F8 = 0x77
 VK_F9 = 0x78
 
 _user32 = ctypes.WinDLL("user32", use_last_error=True)

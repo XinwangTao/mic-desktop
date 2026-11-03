@@ -1,5 +1,5 @@
 {
-  "_comment": "mic-desktop 配置；udp_port 与固件 AUDIO_UDP_TARGET 端口一致；xfyun 填讯飞凭据",
+  "_comment": "mic-desktop 配置；udp_port 与固件 AUDIO_UDP_TARGET 端口一致；xfyun 填讯飞凭据；跨机切换填 remote.host（第二台电脑 IP）",
   "udp_port": 5000,
   "stt_engine": "xfyun",
   "language": "zh_cn",
@@ -7,6 +7,12 @@
     "app_id": "",
     "api_key": "",
     "api_secret": ""
+  },
+  "remote": {
+    "host": "",
+    "port": 8391,
+    "timeout": 2.0,
+    "listen": "0.0.0.0"
   },
   "vad": {
     "rms_threshold": 170,
